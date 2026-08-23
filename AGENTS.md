@@ -14,6 +14,8 @@ Never narrate the conversation history or the user's instructions back at them. 
 
 Before planning or writing any code in a project, read available project documentation to understand the codebase, conventions, and contribution expectations. Look for and read files such as `README` (any extension or none), `CONTRIBUTING`, `AGENTS`, `CLAUDE.md`, `docs/`, architecture documents, and any other project-level docs present in the repository — regardless of file extension (`.md`, `.rst`, `.txt`, plain files, etc.). This ensures plans and implementations align with the project's established patterns, constraints, and guidelines rather than making assumptions that conflict with documented decisions.
 
+Before planning or editing, read PROJECT_BRIEF.md completely!
+
 ## Shell and Command-Line Safety
 
 Always quote paths and variables in shell commands and Makefiles, even if they appear not to contain spaces (`"$var"`, not `$var`). Quote command substitutions too (`"$(cmd)"`, not `$(cmd)`). When piping `find` to `xargs`, always use null-terminated output to handle whitespace and special characters safely (`find ... -print0 | xargs -0 ...`). Use `"$@"` (not `$*`) when forwarding arguments to preserve argument boundaries. Use `--` to separate options from file arguments to guard against filenames starting with `-` (e.g. `rm -- "$f"`). Start bash scripts with `set -euo pipefail` to catch unset variables, failed commands, and pipeline failures. Apply the same discipline in Makefiles, CI scripts, and anywhere shell expansion occurs.
