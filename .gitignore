@@ -1,0 +1,22 @@
+# Go build outputs
+/bin/
+/k6-as-a-library
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Coverage and profiling outputs
+coverage.*
+*.prof
+
+# Generated benchmark artifacts
+/metrics.json
+/report.html
