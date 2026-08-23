@@ -3,13 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptrace"
+	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"strconv"
@@ -46,6 +47,9 @@ const (
 	dashboardMinPeriod          = time.Second
 	dashboardMaxPeriod          = 10 * time.Second
 	dashboardPeriodStep         = time.Second
+	defaultMaxRedirects         = int64(10)
+	defaultBatchSize            = int64(20)
+	defaultBatchSizePerHost     = int64(6)
 )
 
 type runConfig struct {
@@ -120,28 +124,72 @@ func (config runConfig) validate() error {
 
 type nativeRunner struct {
 	lib.Runner
-	client               *http.Client
-	dialer               *netext.Dialer
-	builtin              *metrics.BuiltinMetrics
-	runTags              *metrics.TagSet
-	requestTags          *metrics.TagSet
-	targetURL            string
-	minIterationDuration time.Duration
+	logger         logrus.FieldLogger
+	options        lib.Options
+	resolver       netext.Resolver
+	bufferPool     *lib.BufferPool
+	builtin        *metrics.BuiltinMetrics
+	testStatus     *lib.TestStatus
+	runTags        *metrics.TagSet
+	targetURL      httpext.URL
+	requestTimeout time.Duration
 }
 
 func (r *nativeRunner) NewVU(
 	_ context.Context,
 	idLocal uint64,
-	_ uint64,
+	idGlobal uint64,
 	out chan<- metrics.SampleContainer,
 ) (lib.InitializedVU, error) {
-	return &nativeVU{id: idLocal, runner: r, out: out}, nil
+	dialer := netext.NewDialer(
+		net.Dialer{Timeout: r.requestTimeout, KeepAlive: 30 * time.Second},
+		r.resolver,
+	)
+	tlsConfig := &tls.Config{Renegotiation: tls.RenegotiateFreelyAsClient}
+	transport := &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		DialContext:         dialer.DialContext,
+		TLSClientConfig:     tlsConfig,
+		DisableCompression:  true,
+		MaxIdleConns:        int(r.options.Batch.Int64),
+		MaxIdleConnsPerHost: int(r.options.BatchPerHost.Int64),
+		ForceAttemptHTTP2:   true,
+	}
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("create VU cookie jar: %w", err)
+	}
+	state := &lib.State{
+		Options:        r.options,
+		BuiltinMetrics: r.builtin,
+		Logger:         r.logger,
+		Dialer:         dialer,
+		Transport:      transport,
+		CookieJar:      jar,
+		TLSConfig:      tlsConfig,
+		Samples:        out,
+		BufferPool:     r.bufferPool,
+		VUID:           idLocal,
+		VUIDGlobal:     idGlobal,
+		Iteration:      -1,
+		Tags:           lib.NewVUStateTags(r.runTags),
+		TestStatus:     r.testStatus,
+	}
+	return &nativeVU{
+		id:        idLocal,
+		runner:    r,
+		state:     state,
+		dialer:    dialer,
+		transport: transport,
+	}, nil
 }
 
 type nativeVU struct {
-	id     uint64
-	runner *nativeRunner
-	out    chan<- metrics.SampleContainer
+	id        uint64
+	runner    *nativeRunner
+	state     *lib.State
+	dialer    *netext.Dialer
+	transport *http.Transport
 }
 
 func (vu *nativeVU) GetID() uint64 {
@@ -149,6 +197,23 @@ func (vu *nativeVU) GetID() uint64 {
 }
 
 func (vu *nativeVU) Activate(params *lib.VUActivationParams) lib.ActiveVU {
+	vu.state.Tags.Modify(func(tagsAndMeta *metrics.TagsAndMeta) {
+		tagsAndMeta.Tags = vu.runner.runTags.WithTagsFromMap(params.Tags)
+		tagsAndMeta.Metadata = nil
+		if vu.state.Options.SystemTags.Has(metrics.TagVU) {
+			tagsAndMeta.SetSystemTagOrMeta(metrics.TagVU, strconv.FormatUint(vu.state.VUID, 10))
+		}
+		tagsAndMeta.SetSystemTagOrMetaIfEnabled(
+			vu.state.Options.SystemTags,
+			metrics.TagGroup,
+			lib.RootGroupPath,
+		)
+		tagsAndMeta.SetSystemTagOrMetaIfEnabled(
+			vu.state.Options.SystemTags,
+			metrics.TagScenario,
+			params.Scenario,
+		)
+	})
 	active := &activeNativeVU{
 		nativeVU: vu,
 		ctx:      params.RunContext,
@@ -156,6 +221,7 @@ func (vu *nativeVU) Activate(params *lib.VUActivationParams) lib.ActiveVU {
 	}
 	context.AfterFunc(params.RunContext, func() {
 		active.busy <- struct{}{}
+		vu.transport.CloseIdleConnections()
 		if params.DeactivateCallback != nil {
 			params.DeactivateCallback(vu)
 		}
@@ -177,33 +243,58 @@ func (vu *activeNativeVU) RunOnce() error {
 	}
 	defer func() { <-vu.busy }()
 
-	iterationStarted := time.Now()
-	tracer := &httpext.Tracer{}
-	requestContext := httptrace.WithClientTrace(vu.ctx, tracer.Trace())
-	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, vu.runner.targetURL, nil)
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+	vu.state.Iteration++
+	if vu.state.Options.SystemTags.Has(metrics.TagIter) {
+		vu.state.Tags.Modify(func(tagsAndMeta *metrics.TagsAndMeta) {
+			tagsAndMeta.SetSystemTagOrMeta(metrics.TagIter, strconv.FormatInt(vu.state.Iteration, 10))
+		})
+	}
+	if !vu.state.Options.NoCookiesReset.ValueOrZero() {
+		jar, err := cookiejar.New(nil)
+		if err != nil {
+			return fmt.Errorf("reset VU cookie jar: %w", err)
+		}
+		vu.state.CookieJar = jar
 	}
 
-	response, requestErr := vu.runner.client.Do(request)
-	var iterationErr error
-	if requestErr != nil {
-		iterationErr = fmt.Errorf("send request: %w", requestErr)
+	iterationStarted := time.Now()
+	requestURL := *vu.runner.targetURL.GetURL()
+	request := &http.Request{
+		Method: http.MethodGet,
+		URL:    &requestURL,
+		Header: make(http.Header),
 	}
-	if response != nil {
-		if _, err := io.Copy(io.Discard, response.Body); err != nil {
-			iterationErr = errors.Join(iterationErr, fmt.Errorf("read response: %w", err))
-		}
-		if err := response.Body.Close(); err != nil {
-			iterationErr = errors.Join(iterationErr, fmt.Errorf("close response: %w", err))
-		}
-		if response.StatusCode != http.StatusOK {
-			iterationErr = errors.Join(iterationErr, fmt.Errorf("unexpected HTTP status: %s", response.Status))
-		}
+	requestCookies := make(map[string]*httpext.HTTPRequestCookie)
+	if vu.state.CookieJar != nil {
+		httpext.SetRequestCookies(request, vu.state.CookieJar, requestCookies)
+	}
+	responseType := httpext.ResponseTypeText
+	if vu.state.Options.DiscardResponseBodies.Bool {
+		responseType = httpext.ResponseTypeNone
+	}
+	_, requestErr := httpext.MakeRequest(vu.ctx, vu.state, &httpext.ParsedHTTPRequest{
+		URL:              &vu.runner.targetURL,
+		Req:              request,
+		Timeout:          vu.runner.requestTimeout,
+		Throw:            vu.state.Options.Throw.Bool,
+		ResponseType:     responseType,
+		ResponseCallback: isExpectedResponse,
+		Redirects:        vu.state.Options.MaxRedirects,
+		ActiveJar:        vu.state.CookieJar,
+		Cookies:          requestCookies,
+		TagsAndMeta:      vu.state.Tags.GetCurrentValues(),
+	})
+	if requestErr != nil {
+		requestErr = fmt.Errorf("make k6 HTTP request: %w", requestErr)
 	}
 
 	iterationEnded := time.Now()
-	vu.emitRequestMetrics(tracer.Done(), iterationErr != nil)
+	currentTags := vu.state.Tags.GetCurrentValues()
+	metrics.PushIfNotDone(
+		vu.ctx,
+		vu.state.Samples,
+		vu.dialer.IOSamples(iterationEnded, currentTags, vu.state.BuiltinMetrics),
+	)
 	select {
 	case <-vu.ctx.Done():
 		return lib.ContextErr(vu.ctx)
@@ -211,8 +302,11 @@ func (vu *activeNativeVU) RunOnce() error {
 	}
 
 	iterationDuration := iterationEnded.Sub(iterationStarted)
-	vu.emitIterationMetrics(iterationEnded, iterationDuration)
-	remaining := remainingIterationDuration(vu.runner.minIterationDuration, iterationDuration)
+	vu.emitIterationMetrics(iterationEnded, iterationDuration, currentTags)
+	remaining := remainingIterationDuration(
+		vu.state.Options.MinIterationDuration.TimeDuration(),
+		iterationDuration,
+	)
 	if remaining > 0 {
 		timer := time.NewTimer(remaining)
 		defer timer.Stop()
@@ -221,7 +315,11 @@ func (vu *activeNativeVU) RunOnce() error {
 		case <-vu.ctx.Done():
 		}
 	}
-	return iterationErr
+	return requestErr
+}
+
+func isExpectedResponse(status int) bool {
+	return status >= http.StatusOK && status < http.StatusBadRequest
 }
 
 func remainingIterationDuration(minimum, elapsed time.Duration) time.Duration {
@@ -231,36 +329,35 @@ func remainingIterationDuration(minimum, elapsed time.Duration) time.Duration {
 	return minimum - elapsed
 }
 
-func (vu *activeNativeVU) emitRequestMetrics(trail *httpext.Trail, failed bool) {
-	trail.SaveSamples(
-		vu.runner.builtin,
-		&metrics.TagsAndMeta{Tags: vu.runner.requestTags},
-	)
-	samples := append(metrics.Samples{}, trail.GetSamples()...)
-	samples = append(samples, newSample(
-		vu.runner.builtin.HTTPReqFailed,
-		vu.runner.requestTags,
-		trail.EndTime,
-		boolValue(failed),
-	))
-	ioSamples := vu.runner.dialer.IOSamples(
-		trail.EndTime,
-		metrics.TagsAndMeta{Tags: vu.runner.runTags},
-		vu.runner.builtin,
-	)
-	samples = append(samples, ioSamples.GetSamples()...)
-	metrics.PushIfNotDone(vu.ctx, vu.out, samples)
-}
-
-func (vu *activeNativeVU) emitIterationMetrics(at time.Time, duration time.Duration) {
-	metrics.PushIfNotDone(vu.ctx, vu.out, metrics.ConnectedSamples{
-		Tags: vu.runner.runTags,
+func (vu *activeNativeVU) emitIterationMetrics(
+	at time.Time,
+	duration time.Duration,
+	tagsAndMeta metrics.TagsAndMeta,
+) {
+	metrics.PushIfNotDone(vu.ctx, vu.state.Samples, metrics.ConnectedSamples{
+		Tags: tagsAndMeta.Tags,
 		Time: at,
 		Samples: []metrics.Sample{
-			newSample(vu.runner.builtin.IterationDuration, vu.runner.runTags, at, metrics.D(duration)),
-			newSample(vu.runner.builtin.Iterations, vu.runner.runTags, at, 1),
+			newSampleWithMetadata(
+				vu.state.BuiltinMetrics.IterationDuration,
+				tagsAndMeta,
+				at,
+				metrics.D(duration),
+			),
+			newSampleWithMetadata(vu.state.BuiltinMetrics.Iterations, tagsAndMeta, at, 1),
 		},
 	})
+}
+
+func newSampleWithMetadata(
+	metric *metrics.Metric,
+	tagsAndMeta metrics.TagsAndMeta,
+	at time.Time,
+	value float64,
+) metrics.Sample {
+	sample := newSample(metric, tagsAndMeta.Tags, at, value)
+	sample.Metadata = tagsAndMeta.Metadata
+	return sample
 }
 
 func newSample(metric *metrics.Metric, tags *metrics.TagSet, at time.Time, value float64) metrics.Sample {
@@ -271,23 +368,19 @@ func newSample(metric *metrics.Metric, tags *metrics.TagSet, at time.Time, value
 	}
 }
 
-func boolValue(value bool) float64 {
-	if value {
-		return 1
+func newRunnerOptions(config runConfig) lib.Options {
+	systemTags := metrics.DefaultSystemTagSet
+	return lib.Options{
+		DNS:                   types.DefaultDNSConfig(),
+		MaxRedirects:          null.IntFrom(defaultMaxRedirects),
+		Batch:                 null.IntFrom(defaultBatchSize),
+		BatchPerHost:          null.IntFrom(defaultBatchSizePerHost),
+		Throw:                 null.BoolFrom(false),
+		MinIterationDuration:  types.NullDurationFrom(config.minIterationDuration),
+		SystemTags:            &systemTags,
+		NoCookiesReset:        null.BoolFrom(false),
+		DiscardResponseBodies: null.BoolFrom(true),
 	}
-	return 0
-}
-
-func newHTTPClient(timeout time.Duration) (*http.Client, *netext.Dialer, error) {
-	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		return nil, nil, fmt.Errorf("default HTTP transport has type %T", http.DefaultTransport)
-	}
-	resolver := netext.NewResolver(net.LookupIP, 0, types.DNSfirst, types.DNSany)
-	dialer := netext.NewDialer(net.Dialer{Timeout: timeout, KeepAlive: 30 * time.Second}, resolver)
-	transport := defaultTransport.Clone()
-	transport.DialContext = dialer.DialContext
-	return &http.Client{Transport: transport, Timeout: timeout}, dialer, nil
 }
 
 func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) error {
@@ -296,34 +389,23 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) error 
 	registry := metrics.NewRegistry()
 	builtin := metrics.RegisterBuiltinMetrics(registry)
 	runTags := registry.RootTagSet()
-	requestTags := runTags.With("url", config.targetURL)
 	out := make(chan metrics.SampleContainer, 128)
-	client, dialer, err := newHTTPClient(config.requestTimeout)
+	targetURL, err := httpext.NewURL(config.targetURL, config.targetURL)
 	if err != nil {
-		return fmt.Errorf("create HTTP client: %w", err)
+		return fmt.Errorf("create k6 target URL: %w", err)
 	}
-	defer client.CloseIdleConnections()
-
-	runner := &nativeRunner{
-		client:               client,
-		dialer:               dialer,
-		builtin:              builtin,
-		runTags:              runTags,
-		requestTags:          requestTags,
-		targetURL:            config.targetURL,
-		minIterationDuration: config.minIterationDuration,
+	options := newRunnerOptions(config)
+	dnsTTL, err := types.ParseExtendedDuration(options.DNS.TTL.String)
+	if err != nil {
+		return fmt.Errorf("parse default DNS TTL: %w", err)
 	}
-	test := &lib.TestRunState{
-		TestPreInitState: &lib.TestPreInitState{
-			Logger:         logger,
-			Registry:       registry,
-			BuiltinMetrics: builtin,
-			TestStatus:     lib.NewTestStatus(),
-		},
-		Runner:  runner,
-		RunTags: registry.RootTagSet(),
-	}
-	test.Options.MinIterationDuration = types.NullDurationFrom(config.minIterationDuration)
+	testStatus := lib.NewTestStatus()
+	resolver := netext.NewResolver(
+		net.LookupIP,
+		dnsTTL,
+		options.DNS.Select.DNSSelect,
+		options.DNS.Policy.DNSPolicy,
+	)
 
 	tuple, err := lib.NewExecutionTuple(nil, nil)
 	if err != nil {
@@ -334,7 +416,29 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) error 
 	executorConfig.Iterations = null.IntFrom(config.iterations)
 	executorConfig.MaxDuration = types.NullDurationFrom(config.maxDuration)
 	requirements := executorConfig.GetExecutionRequirements(tuple)
-	test.Options.Scenarios = lib.ScenarioConfigs{"native-go": executorConfig}
+	options.Scenarios = lib.ScenarioConfigs{"native-go": executorConfig}
+	runner := &nativeRunner{
+		logger:         logger,
+		options:        options,
+		resolver:       resolver,
+		bufferPool:     lib.NewBufferPool(),
+		builtin:        builtin,
+		testStatus:     testStatus,
+		runTags:        runTags,
+		targetURL:      targetURL,
+		requestTimeout: config.requestTimeout,
+	}
+	test := &lib.TestRunState{
+		TestPreInitState: &lib.TestPreInitState{
+			Logger:         logger,
+			Registry:       registry,
+			BuiltinMetrics: builtin,
+			TestStatus:     testStatus,
+		},
+		Options: options,
+		Runner:  runner,
+		RunTags: runTags,
+	}
 	state := lib.NewExecutionState(
 		test,
 		tuple,
