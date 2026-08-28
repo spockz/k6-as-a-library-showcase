@@ -1,0 +1,191 @@
+{
+  "consumer": {
+    "name": "httpbin-response-consumer"
+  },
+  "provider": {
+    "name": "httpbin"
+  },
+  "metadata": {
+    "pactSpecification": {
+      "version": "3.0.0"
+    }
+  },
+  "interactions": [
+    {
+      "description": "return a JSON document",
+      "request": {
+        "method": "GET",
+        "path": "/json",
+        "headers": {
+          "Accept": "application/json"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "slideshow": {
+            "author": "Yours Truly",
+            "slides": [
+              {
+                "title": "Wake up to WonderWidgets!",
+                "type": "all"
+              }
+            ],
+            "title": "Sample Slide Show"
+          }
+        },
+        "matchingRules": {
+          "body": {
+            "$.slideshow.slides": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "type",
+                  "min": 1
+                }
+              ]
+            }
+          },
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^application/json(?:; charset=utf-8)?$"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "return decoded text",
+      "request": {
+        "method": "GET",
+        "path": "/base64/UGFjdCBleGFtcGxl"
+      },
+      "response": {
+        "status": 200,
+        "body": "Pact example"
+      }
+    },
+    {
+      "description": "return custom response headers",
+      "request": {
+        "method": "GET",
+        "path": "/response-headers",
+        "query": {
+          "X-Pact": [
+            "verified"
+          ]
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Pact": "verified"
+        },
+        "matchingRules": {
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^application/json(?:; charset=utf-8)?$"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "set a cookie with a redirect",
+      "request": {
+        "method": "GET",
+        "path": "/cookies/set",
+        "query": {
+          "pact": [
+            "verified"
+          ]
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Location": "/cookies",
+          "Set-Cookie": "pact=verified; Path=/"
+        },
+        "matchingRules": {
+          "header": {
+            "Set-Cookie": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^pact=verified; Path=/(?:; HttpOnly)?$"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "return no content",
+      "request": {
+        "method": "GET",
+        "path": "/status/204"
+      },
+      "response": {
+        "status": 204
+      }
+    },
+    {
+      "description": "return a teapot response",
+      "providerStates": [
+        {
+          "name": "httpbin supports teapot responses"
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/status/418"
+      },
+      "response": {
+        "status": 418,
+        "body": "teapot",
+        "matchingRules": {
+          "body": {
+            "$": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "include",
+                  "value": "teapot"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "expect status 300 from the status 200 endpoint",
+      "request": {
+        "method": "GET",
+        "path": "/status/200"
+      },
+      "response": {
+        "status": 300
+      }
+    }
+  ]
+}

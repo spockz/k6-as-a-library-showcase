@@ -22,6 +22,7 @@ func TestRunCommandHelpListsConfigurationFlags(t *testing.T) {
 	}
 	for _, flag := range []string{
 		"--url",
+		"--pacts-dir",
 		"--vus",
 		"--iterations",
 		"--min-iteration-duration",
@@ -84,6 +85,7 @@ func TestRunCommandRejectsInvalidArguments(t *testing.T) {
 	}{
 		{name: "positional argument", args: []string{"run", "unexpected"}},
 		{name: "invalid URL", args: []string{"run", "--url", "localhost:8080"}},
+		{name: "missing PACT directory", args: []string{"run", "--pacts-dir", "/path/does/not/exist"}},
 		{name: "zero VUs", args: []string{"run", "--vus", "0"}},
 		{name: "too few iterations", args: []string{"run", "--vus", "2", "--iterations", "1"}},
 		{

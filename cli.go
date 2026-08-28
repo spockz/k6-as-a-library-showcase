@@ -29,6 +29,7 @@ func newRunCommand() *cobra.Command {
 
 	flags := command.Flags()
 	flags.StringVar(&config.targetURL, "url", config.targetURL, "HTTP endpoint to load test")
+	flags.StringVar(&config.pactDirectory, "pacts-dir", config.pactDirectory, "directory containing PACT JSON files")
 	flags.Int64Var(&config.virtualUsers, "vus", config.virtualUsers, "number of virtual users")
 	flags.Int64Var(&config.iterations, "iterations", config.iterations, "total iterations shared by all VUs")
 	flags.DurationVar(

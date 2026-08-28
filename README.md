@@ -1,6 +1,6 @@
 # k6 as a Go Library
 
-This project demonstrates how to run a fixed HTTP load-testing workload directly through k6's Go APIs, without executing a JavaScript test script, and re-using as much as possible from the public Go APIs.
+This project demonstrates how to run HTTP load-testing workloads directly through k6's Go APIs, without executing a JavaScript test script, and re-using as much as possible from the public Go APIs. Workloads can use a fixed GET request or the interactions in a directory of Pact files.
 
 The ultimate goal for this effort is to demonstrate how we could generate K6 benchmarks directly from golang based on alternative inputs than JS. The input is as follows:
 
@@ -40,7 +40,8 @@ Production metric samples use k6's built-in metric objects rather than recreatin
 | `iterations`, `iteration_duration` | Emitted |
 | `dropped_iterations` | Emitted conditionally by the shared-iterations executor |
 | `vus`, `vus_max` | Not emitted because the internal k6 scheduler is bypassed |
-| Checks, groups, WebSockets, and gRPC | Not applicable to the fixed HTTP workload |
+| Checks | Pact response checks are emitted for status, headers, cookies, and body matching |
+| Groups, WebSockets, and gRPC | Not implemented |
 
 ### Known differences
 
@@ -52,11 +53,11 @@ Production metric samples use k6's built-in metric objects rather than recreatin
 
 4. **The external runner API has an upstream limitation.** The exported `lib.Runner` interface references an internal summary type, so an external Go module cannot implement every method directly. The native runner embeds `lib.Runner` and overrides the methods used by the direct executor. Calling another promoted lifecycle method would be unsafe.
 
-5. **HTTP request defaults still differ.** The native workload constructs the fixed GET request after the JavaScript HTTP parsing layer, so it does not set the k6 CLI's `Grafana k6/<version>` user agent and Go supplies its default user agent instead. It also always discards response bodies, while the k6 CLI retains them unless `discardResponseBodies` is enabled.
+5. **HTTP request defaults still differ.** The native workload bypasses the JavaScript HTTP parsing layer, so it does not set the k6 CLI's `Grafana k6/<version>` user agent and Go supplies its default user agent instead. The fixed workload discards response bodies, while Pact mode retains them for response matching.
 
 6. **Cancellation can suppress transferred-byte samples.** The native VU sends `netext.Dialer.IOSamples` through `metrics.PushIfNotDone` with the canceled VU context, so `data_sent` and `data_received` may be omitted for an interrupted iteration. k6's VU runner emits those I/O deltas before deciding whether the iteration completed.
 
-7. **The console summary and threshold lifecycle are custom.** The local summary reports only request count, failure count, and average request duration. It does not use k6's metrics-engine summary, accept threshold configuration, evaluate thresholds, or report threshold failures.
+7. **The console summary and threshold lifecycle are custom.** The local summary reports request count, failure count, check count, failed checks, and average request duration. For Pact runs, it repeats those values for consumer, provider, endpoint, interaction, provider-state, and `name` tag combinations. It does not use k6's metrics-engine summary, accept threshold configuration, evaluate thresholds, or report threshold failures.
 
 Further alignment should start with the one-second `vus` and `vus_max` emission loop, followed by preserving I/O samples during cancellation and aligning the fixed request defaults. JSON streaming and the summary and threshold pipeline require larger compatibility implementations because the corresponding k6 packages are internal.
 
@@ -77,3 +78,21 @@ go run . run \
 `--min-iteration-duration` defaults to 25 milliseconds. Completed iterations shorter than this value wait only for the remaining time, and the wait is excluded from `iteration_duration`.
 
 Use `--dashboard` to host the live dashboard during the run. It is disabled by default.
+
+To load Pact interactions, pass the provider base URL with `--url` and a directory containing Pact JSON files with `--pacts-dir`:
+
+```sh
+go run . run \
+  --url http://localhost:8080 \
+  --pacts-dir testdata/pacts \
+  --vus 2 \
+  --iterations 2000 \
+  --json-output metrics.json \
+  --html-output report.html
+```
+
+The two example contracts in `testdata/pacts` are based on httpbin's local specification at `http://localhost:8080/spec.json`. They cover GET query reflection, JSON POST reflection, JSON and text bodies, custom response headers, a cookie-setting redirect, and 204 and 418 status responses. One interaction deliberately calls `/status/200` while expecting status 300 so the generated metrics and report include a Pact verification failure. Integration tests serve the contracts with `github.com/mccutchen/go-httpbin/v2/httpbin` instead of duplicating httpbin route definitions.
+
+Each iteration sends one Pact interaction, cycling through all loaded interactions. A failed response check is recorded in the built-in `checks` metric and does not stop the load run; transport failures remain HTTP request failures.
+
+The Pact adapter uses the public `pact-go` specification-version and provider-state types. The SDK's public API does not expose individual parsed interactions or match results, so the repository includes the small JSON compatibility layer needed to connect Pact files to k6's per-request metrics.

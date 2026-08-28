@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/grafana/xk6-dashboard/dashboard"
@@ -54,6 +55,7 @@ const (
 
 type runConfig struct {
 	targetURL            string
+	pactDirectory        string
 	virtualUsers         int64
 	iterations           int64
 	minIterationDuration time.Duration
@@ -70,6 +72,7 @@ type runConfig struct {
 func defaultRunConfig() runConfig {
 	return runConfig{
 		targetURL:            defaultTargetURL,
+		pactDirectory:        "",
 		virtualUsers:         defaultVirtualUsers,
 		iterations:           defaultIterations,
 		minIterationDuration: defaultMinIterationDuration,
@@ -88,6 +91,15 @@ func (config runConfig) validate() error {
 	target, err := url.ParseRequestURI(config.targetURL)
 	if err != nil || target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
 		return fmt.Errorf("invalid HTTP URL %q", config.targetURL)
+	}
+	if config.pactDirectory != "" {
+		info, err := os.Stat(config.pactDirectory)
+		if err != nil {
+			return fmt.Errorf("invalid PACT directory %q: %w", config.pactDirectory, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("PACT path %q is not a directory", config.pactDirectory)
+		}
 	}
 	if config.virtualUsers <= 0 {
 		return fmt.Errorf("VUs must be greater than zero")
@@ -124,15 +136,17 @@ func (config runConfig) validate() error {
 
 type nativeRunner struct {
 	lib.Runner
-	logger         logrus.FieldLogger
-	options        lib.Options
-	resolver       netext.Resolver
-	bufferPool     *lib.BufferPool
-	builtin        *metrics.BuiltinMetrics
-	testStatus     *lib.TestStatus
-	runTags        *metrics.TagSet
-	targetURL      httpext.URL
-	requestTimeout time.Duration
+	logger          logrus.FieldLogger
+	options         lib.Options
+	resolver        netext.Resolver
+	bufferPool      *lib.BufferPool
+	builtin         *metrics.BuiltinMetrics
+	testStatus      *lib.TestStatus
+	runTags         *metrics.TagSet
+	targetURL       httpext.URL
+	requestTimeout  time.Duration
+	interactions    []pactInteraction
+	nextInteraction atomic.Uint64
 }
 
 func (r *nativeRunner) NewVU(
@@ -257,38 +271,147 @@ func (vu *activeNativeVU) RunOnce() error {
 		vu.state.CookieJar = jar
 	}
 
-	iterationStarted := time.Now()
-	requestURL := *vu.runner.targetURL.GetURL()
-	request := &http.Request{
-		Method: http.MethodGet,
-		URL:    &requestURL,
-		Header: make(http.Header),
+	var (
+		interaction *pactInteraction
+		prepared    preparedPactRequest
+		requestURL  = &vu.runner.targetURL
+	)
+	if len(vu.runner.interactions) > 0 {
+		index := (vu.runner.nextInteraction.Add(1) - 1) % uint64(len(vu.runner.interactions))
+		interaction = &vu.runner.interactions[index]
+		vu.state.Tags.Modify(func(tagsAndMeta *metrics.TagsAndMeta) {
+			applyPactInteractionTags(tagsAndMeta, interaction, vu.state.Options.SystemTags)
+		})
+		var err error
+		prepared, err = interaction.prepareRequest()
+		if err != nil {
+			return fmt.Errorf("prepare PACT interaction %q: %w", interaction.Name, err)
+		}
+		requestURL = interaction.RequestURL
+	} else {
+		prepared = preparedPactRequest{
+			Request: &http.Request{
+				Method: http.MethodGet,
+				URL:    vu.runner.targetURL.GetURL(),
+				Header: make(http.Header),
+			},
+			Cookies: make(map[string]*httpext.HTTPRequestCookie),
+		}
 	}
-	requestCookies := make(map[string]*httpext.HTTPRequestCookie)
+
+	iterationStarted := time.Now()
+	request := prepared.Request
+	requestCookies := prepared.Cookies
 	if vu.state.CookieJar != nil {
 		httpext.SetRequestCookies(request, vu.state.CookieJar, requestCookies)
 	}
 	responseType := httpext.ResponseTypeText
-	if vu.state.Options.DiscardResponseBodies.Bool {
+	if interaction != nil {
+		responseType = httpext.ResponseTypeBinary
+	} else if vu.state.Options.DiscardResponseBodies.Bool {
 		responseType = httpext.ResponseTypeNone
 	}
-	_, requestErr := httpext.MakeRequest(vu.ctx, vu.state, &httpext.ParsedHTTPRequest{
-		URL:              &vu.runner.targetURL,
+	responseCallback := isExpectedResponse
+	if interaction != nil {
+		responseCallback = func(status int) bool {
+			return status == interaction.Response.Status
+		}
+	}
+	redirects := vu.state.Options.MaxRedirects
+	if interaction != nil {
+		redirects = null.IntFrom(0)
+	}
+	response, requestErr := httpext.MakeRequest(vu.ctx, vu.state, &httpext.ParsedHTTPRequest{
+		URL:              requestURL,
+		Body:             prepared.Body,
 		Req:              request,
 		Timeout:          vu.runner.requestTimeout,
 		Throw:            vu.state.Options.Throw.Bool,
 		ResponseType:     responseType,
-		ResponseCallback: isExpectedResponse,
-		Redirects:        vu.state.Options.MaxRedirects,
+		ResponseCallback: responseCallback,
+		Redirects:        redirects,
 		ActiveJar:        vu.state.CookieJar,
 		Cookies:          requestCookies,
 		TagsAndMeta:      vu.state.Tags.GetCurrentValues(),
 	})
+	if interaction != nil {
+		vu.checkPactResponse(response, interaction, requestErr)
+	}
 	if requestErr != nil {
 		requestErr = fmt.Errorf("make k6 HTTP request: %w", requestErr)
 	}
 
 	iterationEnded := time.Now()
+	return vu.finishIteration(iterationStarted, iterationEnded, requestErr)
+}
+
+func applyPactInteractionTags(
+	tagsAndMeta *metrics.TagsAndMeta,
+	interaction *pactInteraction,
+	systemTags *metrics.SystemTagSet,
+) {
+	for _, name := range pactRequestTagNames {
+		tagsAndMeta.DeleteTag(name)
+	}
+	for _, name := range pactRequestMetadataNames {
+		tagsAndMeta.DeleteMetadata(name)
+	}
+	for name, value := range interaction.Tags {
+		tagsAndMeta.SetTag(name, value)
+	}
+	if interaction.PactFile != "" {
+		tagsAndMeta.SetMetadata(pactFileMetadata, interaction.PactFile)
+	}
+	if interaction.Description != "" {
+		tagsAndMeta.SetMetadata(pactDescriptionMeta, interaction.Description)
+	}
+	tagsAndMeta.SetSystemTagOrMetaIfEnabled(systemTags, metrics.TagName, interaction.Name)
+}
+
+func (vu *activeNativeVU) checkPactResponse(
+	response *httpext.Response,
+	interaction *pactInteraction,
+	requestErr error,
+) {
+	var matchErr error
+	if requestErr != nil {
+		matchErr = requestErr
+	} else {
+		matchErr = matchPactResponse(interaction.Response, response)
+	}
+
+	at := time.Now()
+	tagsAndMeta := vu.state.Tags.GetCurrentValues()
+	tagsAndMeta.SetSystemTagOrMetaIfEnabled(
+		vu.state.Options.SystemTags,
+		metrics.TagCheck,
+		pactResponseCheckName,
+	)
+	if matchErr != nil {
+		tagsAndMeta.SetMetadata(pactMismatchMetadata, matchErr.Error())
+		vu.state.Logger.WithFields(logrus.Fields{
+			"interaction": interaction.Name,
+			"pact_file":   interaction.PactFile,
+		}).Warnf("PACT response mismatch: %v", matchErr)
+	}
+	value := float64(1)
+	if matchErr != nil {
+		value = 0
+	}
+	metrics.PushIfNotDone(vu.ctx, vu.state.Samples, metrics.ConnectedSamples{
+		Tags: tagsAndMeta.Tags,
+		Time: at,
+		Samples: []metrics.Sample{
+			newSampleWithMetadata(vu.state.BuiltinMetrics.Checks, tagsAndMeta, at, value),
+		},
+	})
+}
+
+func (vu *activeNativeVU) finishIteration(
+	iterationStarted time.Time,
+	iterationEnded time.Time,
+	requestErr error,
+) error {
 	currentTags := vu.state.Tags.GetCurrentValues()
 	metrics.PushIfNotDone(
 		vu.ctx,
@@ -394,6 +517,16 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) error 
 	if err != nil {
 		return fmt.Errorf("create k6 target URL: %w", err)
 	}
+	var interactions []pactInteraction
+	if config.pactDirectory != "" {
+		interactions, err = loadPactDirectory(config.pactDirectory)
+		if err != nil {
+			return err
+		}
+		if err := bindPactInteractionURLs(interactions, targetURL.GetURL()); err != nil {
+			return err
+		}
+	}
 	options := newRunnerOptions(config)
 	dnsTTL, err := types.ParseExtendedDuration(options.DNS.TTL.String)
 	if err != nil {
@@ -427,6 +560,7 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) error 
 		runTags:        runTags,
 		targetURL:      targetURL,
 		requestTimeout: config.requestTimeout,
+		interactions:   interactions,
 	}
 	test := &lib.TestRunState{
 		TestPreInitState: &lib.TestPreInitState{
@@ -481,7 +615,7 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) error 
 		ExecutionPlan:  requirements,
 	}
 	jsonOutput := newJSONOutput(config.jsonFilename)
-	consoleOutput := newSummaryOutput(stdout, config.htmlFilename, config.jsonFilename)
+	consoleOutput := newSummaryOutput(stdout, config.htmlFilename, config.jsonFilename, len(interactions) > 0)
 	outputs := make([]output.Output, 0, 3)
 	if config.dashboard {
 		if err := ensureDashboardAddressAvailable(config.dashboardHost, config.dashboardPort); err != nil {
@@ -530,6 +664,7 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) error 
 		config.htmlFilename,
 		logger,
 		dashboardPeriod(observedRuntime),
+		len(interactions) > 0,
 	); err != nil {
 		return err
 	}
@@ -547,6 +682,11 @@ func newLiveDashboardOutput(config runConfig, params output.Params) (output.Outp
 		"host":   {config.dashboardHost},
 		"period": {dashboardMinPeriod.String()},
 		"port":   {strconv.Itoa(config.dashboardPort)},
+	}
+	if config.pactDirectory != "" {
+		for _, tag := range pactSummaryTags {
+			values.Add("tag", tag)
+		}
 	}
 	if config.dashboardOpen {
 		values.Set("open", "true")
@@ -636,6 +776,7 @@ func generateHTMLReport(
 	htmlFilename string,
 	logger *logrus.Logger,
 	period time.Duration,
+	pactMode ...bool,
 ) (resultErr error) {
 	eventsFile, err := os.CreateTemp("", "k6-dashboard-*.ndjson")
 	if err != nil {
@@ -658,11 +799,13 @@ func generateHTMLReport(
 	globalState.Logger = logger
 	globalState.FallbackLogger = logger
 
-	if err := executeDashboardCommand(
-		ctx,
-		globalState,
-		[]string{"aggregate", jsonFilename, eventsFilename, "--period", period.String()},
-	); err != nil {
+	aggregateArgs := []string{"aggregate", jsonFilename, eventsFilename, "--period", period.String()}
+	if len(pactMode) > 0 && pactMode[0] {
+		for _, tag := range pactSummaryTags {
+			aggregateArgs = append(aggregateArgs, "--tags", tag)
+		}
+	}
+	if err := executeDashboardCommand(ctx, globalState, aggregateArgs); err != nil {
 		return fmt.Errorf("aggregate dashboard observations: %w", err)
 	}
 	if err := addDashboardAggregates(eventsFilename); err != nil {

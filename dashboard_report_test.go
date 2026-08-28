@@ -86,7 +86,12 @@ func TestGenerateHTMLReportFromJSONObservations(t *testing.T) {
 	assertCompleteDashboardSnapshots(t, report)
 }
 
-func assertCompleteDashboardSnapshots(t *testing.T, report []byte) {
+type dashboardReportEvent struct {
+	Name string          `json:"event"`
+	Data json.RawMessage `json:"data"`
+}
+
+func decodeDashboardReportEvents(t *testing.T, report []byte) []dashboardReportEvent {
 	t.Helper()
 
 	const dataTag = `<script id="data" type="application/json; charset=utf-8; gzip; base64">`
@@ -114,18 +119,28 @@ func assertCompleteDashboardSnapshots(t *testing.T, report []byte) {
 		}
 	}()
 
-	snapshotCount := 0
-	hasAggregates := false
-	var previousTimestamp int64
+	events := make([]dashboardReportEvent, 0)
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
-		var event struct {
-			Name string          `json:"event"`
-			Data json.RawMessage `json:"data"`
-		}
+		var event dashboardReportEvent
 		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 			t.Fatalf("decode dashboard event: %v", err)
 		}
+		events = append(events, event)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("read dashboard data: %v", err)
+	}
+	return events
+}
+
+func assertCompleteDashboardSnapshots(t *testing.T, report []byte) {
+	t.Helper()
+
+	snapshotCount := 0
+	hasAggregates := false
+	var previousTimestamp int64
+	for _, event := range decodeDashboardReportEvents(t, report) {
 		if event.Name == "param" {
 			var parameters struct {
 				Aggregates map[string][]string `json:"aggregates"`
@@ -188,9 +203,6 @@ func assertCompleteDashboardSnapshots(t *testing.T, report []byte) {
 			)
 		}
 		previousTimestamp = frontendTimestamp
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("read dashboard data: %v", err)
 	}
 	if !hasAggregates {
 		t.Fatal("dashboard parameters do not contain aggregate names")

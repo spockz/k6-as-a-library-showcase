@@ -1,0 +1,90 @@
+{
+  "consumer": {
+    "name": "httpbin-request-consumer"
+  },
+  "provider": {
+    "name": "httpbin"
+  },
+  "metadata": {
+    "pactSpecification": {
+      "version": "3.0.0"
+    }
+  },
+  "interactions": [
+    {
+      "description": "inspect GET query parameters",
+      "request": {
+        "method": "GET",
+        "path": "/get",
+        "query": {
+          "format": [
+            "json"
+          ],
+          "source": [
+            "pact"
+          ]
+        },
+        "headers": {
+          "Accept": "application/json"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "matchingRules": {
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^application/json(?:; charset=utf-8)?$"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "description": "echo a JSON POST body",
+      "request": {
+        "method": "POST",
+        "path": "/post",
+        "headers": {
+          "Accept": "application/json",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "message": "hello from Pact"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "json": {
+            "message": "hello from Pact"
+          }
+        },
+        "matchingRules": {
+          "header": {
+            "Content-Type": {
+              "combine": "AND",
+              "matchers": [
+                {
+                  "match": "regex",
+                  "regex": "^application/json(?:; charset=utf-8)?$"
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
+}
