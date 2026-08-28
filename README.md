@@ -1,10 +1,10 @@
 # k6 as a Go Library
 
-This project demonstrates how to run HTTP load-testing workloads directly through k6's Go APIs, without executing a JavaScript test script, and re-using as much as possible from the public Go APIs. Workloads can use a fixed GET request or the interactions in a directory of Pact files.
+This project demonstrates how to run HTTP load-testing workloads directly through k6's Go APIs, without executing a JavaScript test script, and in the process evaluating the current public available Golang interface of K6 by re-using as much as possible from the public Go APIs. Workloads can use a fixed GET request or the interactions in a directory of Pact files.
 
 The ultimate goal for this effort is to demonstrate how we could generate K6 benchmarks directly from golang based on alternative inputs than JS. The input is as follows:
 
-* OpenAPI Specs (for grouping of logical endpoints)
+* OpenAPI Specs (for grouping of logical endpoints and to be able to show what has and hasn't been benchmarked.)
 * SLA / SLO specification from both the consumer and provider side stating required/expected response times, failure rates, and throughputs for load-generation, thresholds, checks, 
 * Specific requests per consumer based on the interactions on Consumer Contracts (i.e. PACT) to use as basis for the concrete requests.
 * A segments file containing a list of segments, used to tune the above input for specific time periods to allow for thresholds/checks to deactivate in certain periods, to change the load by a factor in a period.
@@ -41,25 +41,34 @@ Production metric samples use k6's built-in metric objects rather than recreatin
 | `dropped_iterations` | Emitted conditionally by the shared-iterations executor |
 | `vus`, `vus_max` | Not emitted because the internal k6 scheduler is bypassed |
 | Checks | Pact response checks are emitted for status, headers, cookies, and body matching |
-| Groups, WebSockets, and gRPC | Not implemented |
+| Groups | The root group tag is emitted; named and nested groups are not modeled |
+| WebSockets and gRPC | Not implemented |
 
 ### Known differences
 
-1. **VU gauges are absent.** The public executor is invoked directly, bypassing the internal scheduler that emits `vus` and `vus_max` on a one-second ticker. Matching the binary requires a local emission loop that samples the active and initialized VU counts throughout execution using their `BuiltinMetrics` fields.
+The labels below distinguish an inability to reuse k6's canonical implementation from behavior that is simply not implemented here. An **internal-package limitation** means Go prevents this external module from importing the relevant k6 package; it does not mean compatible behavior cannot be implemented locally with public APIs.
 
-2. **The JSON output is a compatibility implementation.** k6's JSON output constructor and envelope types are internal packages, so this project reproduces the wire format using exported k6 metric types. The current implementation buffers observations until shutdown instead of flushing every 200 milliseconds, leaves threshold metadata empty because thresholds are not configurable, and tests structural compatibility rather than every serialized value and streaming behavior.
+1. **Internal-package limitation: VU gauges are absent.** The public executor is invoked directly, bypassing `internal/execution`'s scheduler, which emits `vus` and `vus_max` on a one-second ticker. Public execution-state counts and `BuiltinMetrics` fields are sufficient to implement an equivalent local loop, but the canonical loop cannot be reused.
 
-3. **The final-report event stream has a version-specific compatibility step.** xk6-dashboard generates the HTML, but its `aggregate` command omits aggregate metadata that its live output includes. The project adds that metadata before invoking the xk6-dashboard `report` command. The aggregate names and event envelope are therefore coupled to the pinned xk6-dashboard version.
+2. **Internal-package limitation: the JSON output is a compatibility implementation.** k6's JSON output constructor and envelope types live under `internal/output/json`. This project reproduces the wire format using exported metric types, buffers observations until shutdown instead of flushing every 200 milliseconds, and leaves threshold metadata empty because thresholds are not configurable. The periodic flusher is public, so the cadence can be reproduced locally even though the canonical JSON output cannot be reused. The tests cover structural compatibility rather than every serialized value and streaming behavior.
 
-4. **The external runner API has an upstream limitation.** The exported `lib.Runner` interface references an internal summary type, so an external Go module cannot implement every method directly. The native runner embeds `lib.Runner` and overrides the methods used by the direct executor. Calling another promoted lifecycle method would be unsafe.
+3. **Not internal: the final-report event stream has a version-specific compatibility step.** xk6-dashboard's public `aggregate` command omits aggregate names that its `report` command needs and that its live output supplies. The project adds them before rendering the HTML. This is xk6-dashboard behavior and version coupling, not a Go `internal` restriction.
 
-5. **HTTP request defaults still differ.** The native workload bypasses the JavaScript HTTP parsing layer, so it does not set the k6 CLI's `Grafana k6/<version>` user agent and Go supplies its default user agent instead. The fixed workload discards response bodies, while Pact mode retains them for response matching.
+4. **Internal-package limitation: the external runner API cannot be implemented safely.** The exported `lib.Runner` interface references a type from `internal/lib/summary`, which an external Go module cannot name. The native runner therefore embeds `lib.Runner` and overrides only the methods used by the direct executor. Calling another promoted lifecycle method would be unsafe.
 
-6. **Cancellation can suppress transferred-byte samples.** The native VU sends `netext.Dialer.IOSamples` through `metrics.PushIfNotDone` with the canceled VU context, so `data_sent` and `data_received` may be omitted for an interrupted iteration. k6's VU runner emits those I/O deltas before deciding whether the iteration completed.
+5. **Not internal: HTTP request defaults still differ.** The native workload bypasses the JavaScript HTTP parsing layer, so it does not set the k6 CLI's `Grafana k6/<version>` user agent and Go supplies its default user agent instead. The fixed workload discards response bodies, while Pact mode retains them for response matching. Public APIs are sufficient to align these choices.
 
-7. **The console summary and threshold lifecycle are custom.** The local summary reports request count, failure count, check count, failed checks, and average request duration. For Pact runs, it repeats those values for consumer, provider, endpoint, interaction, provider-state, and `name` tag combinations. It does not use k6's metrics-engine summary, accept threshold configuration, evaluate thresholds, or report threshold failures.
+6. **Not internal: cancellation can suppress transferred-byte samples.** The native VU sends `netext.Dialer.IOSamples` through `metrics.PushIfNotDone` with the canceled VU context, so `data_sent` and `data_received` may be omitted for an interrupted iteration. k6 emits those I/O deltas before deciding whether the iteration completed. The required dialer samples and output channel are public, so this is a local lifecycle difference.
 
-Further alignment should start with the one-second `vus` and `vus_max` emission loop, followed by preserving I/O samples during cancellation and aligning the fixed request defaults. JSON streaming and the summary and threshold pipeline require larger compatibility implementations because the corresponding k6 packages are internal.
+7. **Internal-package limitation: the threshold lifecycle is absent.** k6's canonical threshold engine lives under `internal/metrics/engine`. Although metric and threshold definitions are exported, the engine that initializes tagged submetrics, ingests samples, evaluates thresholds periodically and at shutdown, and marks failures cannot be reused. This project does not yet accept threshold configuration or report threshold failures.
+
+8. **Internal-package limitation: the terminal report is a smaller custom summary.** The current output reports request count, failure count, check count, failed checks, and average request duration. Pact runs repeat those values for consumer, provider, endpoint, interaction, provider-state, and `name` tag combinations. The k6 CLI's summary additionally renders every collected metric by type, trend statistics, tagged submetrics, named checks and groups, and threshold pass/fail state with ANSI colors and symbols. Its collector, summary model, threshold integration, and `handleSummary` data construction live in `internal/output/summary`, `internal/lib/summary`, `internal/metrics/engine`, and `internal/js`; the normal progress UI also lives under `internal`. An external module can reproduce the presentation, but it cannot invoke that canonical pipeline directly.
+
+9. **Partly internal: the HTML report uses a different reporting model.** `--html-output` produces an xk6-dashboard document focused on time series, cumulative values, and selected tagged metric series. It is not the table-oriented summary generated by the third-party `k6-reporter` used by many `handleSummary` examples; that renderer is not part of k6's internal code, so internal-package access alone would not produce that report. Reusing such a renderer with identical data is partly constrained by k6's internal summary model and `handleSummary` data construction and would require a compatibility model here. Separately, xk6-dashboard's public aggregator drops per-sample metadata: a Pact mismatch remains visible as a failed `checks` series split by interaction tags, and an HTTP-status expectation mismatch also appears in `http_req_failed`, while the detailed `pact_mismatch` text remains in the JSON output. That metadata loss is not caused by k6's `internal` packages.
+
+10. **Not internal: named and nested groups are not modeled.** The root `group` tag is emitted, but the workload does not create a named group hierarchy. k6's group and tag types are public, so this is a local workload-modeling choice rather than an import restriction.
+
+The `internal` boundary prevents direct reuse for items 1, 2, 4, 7, 8, and part of item 9. Items 3, 5, 6, and 10, plus xk6-dashboard's metadata loss in item 9, are independent of that boundary. Further alignment should start with the locally implementable VU loop, I/O ordering, request defaults, and group modeling. JSON streaming, threshold evaluation, and canonical summary data require larger compatibility implementations around the inaccessible packages; a table-oriented HTML report also requires choosing and integrating a separate renderer.
 
 Run the benchmark with:
 
