@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -269,12 +267,16 @@ func TestNativeVUPactInteractionsUseRequestsTagsAndChecks(t *testing.T) {
 		t.Fatalf("expected %d check samples, got %d", runs, len(checkSamples))
 	}
 	for _, sample := range requestSamples {
-		for _, tag := range []string{pactConsumerTag, pactProviderTag, pactEndpointTag, pactInteractionTag, metrics.TagName.String()} {
+		for _, tag := range []string{pactConsumerTag, pactProviderTag, pactInteractionTag, metrics.TagName.String()} {
 			if _, ok := sample.Tags.Get(tag); !ok {
 				t.Errorf("request sample is missing tag %s", tag)
 			}
 		}
-		endpoint, _ := sample.Tags.Get(pactEndpointTag)
+		endpoint, hasEndpoint := sample.Tags.Get(pactEndpointTag)
+		if !hasEndpoint {
+			t.Error("request sample is missing its endpoint tag")
+			continue
+		}
 		providerState, hasProviderState := sample.Tags.Get(pactProviderStateTag)
 		if endpoint == "GET /status/418" {
 			if !hasProviderState || providerState != "httpbin supports teapot responses" {
@@ -289,6 +291,7 @@ func TestNativeVUPactInteractionsUseRequestsTagsAndChecks(t *testing.T) {
 		interaction, ok := sample.Tags.Get(pactInteractionTag)
 		if !ok {
 			t.Error("PACT check is missing its interaction tag")
+			continue
 		}
 		if interaction == intentionalPactMismatchInteraction {
 			failedChecks++
@@ -316,6 +319,7 @@ func TestNativeVUPactInteractionsUseRequestsTagsAndChecks(t *testing.T) {
 		interaction, ok := sample.Tags.Get(pactInteractionTag)
 		if !ok {
 			t.Error("PACT request-failure sample is missing its interaction tag")
+			continue
 		}
 		if interaction == intentionalPactMismatchInteraction {
 			failedRequests++
@@ -323,7 +327,11 @@ func TestNativeVUPactInteractionsUseRequestsTagsAndChecks(t *testing.T) {
 				t.Errorf("expected intentional PACT request failure, got %f", sample.Value)
 			}
 		} else if sample.Value != 0 {
-			status, _ := sample.Tags.Get(metrics.TagStatus.String())
+			status, hasStatus := sample.Tags.Get(metrics.TagStatus.String())
+			if !hasStatus {
+				t.Errorf("PACT request %q is missing its status tag", interaction)
+				continue
+			}
 			t.Errorf("expected PACT request %q to have no HTTP failure, got %f (status %s, tags %v)", interaction, sample.Value, status, sample.Tags.Map())
 		}
 	}
@@ -348,22 +356,38 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 	config.jsonFilename = filepath.Join(directory, "metrics.json")
 	config.htmlFilename = filepath.Join(directory, "report.html")
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), config, &stdout, &stderr); err != nil {
+	if err := run(t.Context(), config, &stdout, &stderr); err != nil {
 		t.Fatalf("run Pact workload: %v\n%s", err, stderr.String())
 	}
 	for _, fragment := range []string{
-		"metrics by tags:",
-		"consumer_service=httpbin-request-consumer",
-		"consumer_service=httpbin-response-consumer",
-		"\nrequests: 45\nfailed: 5\nchecks: 45\nfailed checks: 5\n",
-		"consumer_service=httpbin-response-consumer provider_service=httpbin endpoint=GET /status/200 pact_interaction=" + intentionalPactMismatchInteraction + " name=pact:" + intentionalPactMismatchInteraction + "\nrequests: 5\nfailed: 5\nchecks: 5\nfailed checks: 5\n",
+		"█ THRESHOLDS",
+		"checks{" + pactResponseCheckSubmetric + "}",
+		"✗ '" + pactResponsesValidThreshold + "' rate=88.88%",
+		"█ TOTAL RESULTS",
+		"checks_total.......: 45",
+		"checks_failed......: 11.11% 5 out of 45",
+		"✗ " + pactResponseCheckName,
+		"↳  88% — ✓ 40 / ✗ 5",
+		"consumer_service:httpbin-request-consumer",
+		"consumer_service:httpbin-response-consumer",
+		"provider_service:httpbin,endpoint:GET /status/200,pact_interaction:" + intentionalPactMismatchInteraction + ",name:pact:" + intentionalPactMismatchInteraction,
+		"100.00% 5 out of 5",
+		"HTTP",
+		"http_req_duration",
+		"http_req_failed",
+		"http_reqs",
+		"NETWORK",
+		"data_received",
+		"data_sent",
 	} {
 		if !strings.Contains(stdout.String(), fragment) {
 			t.Errorf("console output is missing %q:\n%s", fragment, stdout.String())
 		}
 	}
-	if count := strings.Count(stdout.String(), "provider_state=httpbin supports teapot responses"); count != 1 {
-		t.Errorf("console output contains %d provider-state splits, expected one:\n%s", count, stdout.String())
+	assertPactFailureInConsoleMetric(t, stdout.String(), metrics.ChecksName, "0.00% 0 out of 5")
+	assertPactFailureInConsoleMetric(t, stdout.String(), metrics.HTTPReqFailedName, "100.00% 5 out of 5")
+	if count := strings.Count(stdout.String(), "provider_state:httpbin supports teapot responses"); count != 4 {
+		t.Errorf("console output contains %d provider-state metric rows, expected four:\n%s", count, stdout.String())
 	}
 	for _, filename := range []string{config.jsonFilename, config.htmlFilename} {
 		info, err := os.Stat(filename)
@@ -447,54 +471,103 @@ func assertIntentionalPactFailureInMetrics(t *testing.T, filename string, expect
 func assertIntentionalPactFailureInReport(t *testing.T, report []byte) {
 	t.Helper()
 
-	metricNames := make(map[string]struct{})
-	var cumulative []json.RawMessage
-	for _, event := range decodeDashboardReportEvents(t, report) {
-		switch event.Name {
-		case "metric":
-			var definitions map[string]json.RawMessage
-			if err := json.Unmarshal(event.Data, &definitions); err != nil {
-				t.Fatalf("decode Pact report metrics: %v", err)
-			}
-			for name := range definitions {
-				metricNames[name] = struct{}{}
-			}
-		case "cumulative":
-			if err := json.Unmarshal(event.Data, &cumulative); err != nil {
-				t.Fatalf("decode Pact report cumulative metrics: %v", err)
-			}
+	reportText := string(report)
+	compactReport := strings.Join(strings.Fields(reportText), " ")
+	for _, fragment := range []string{
+		"K6 Reporter v" + k6ReporterVersion,
+		pactResponseCheckName,
+		intentionalPactMismatchInteraction,
+		metrics.ChecksName + "{" + pactResponseCheckSubmetric + "}",
+		"<h4>Breached Thresholds</h4> <div class=\"metric-value\">1</div>",
+	} {
+		if !strings.Contains(compactReport, fragment) {
+			t.Errorf("Pact report is missing %q", fragment)
 		}
 	}
-	if len(cumulative) == 0 {
-		t.Fatal("Pact report does not contain cumulative metrics")
-	}
-
-	names := make([]string, 0, len(metricNames))
-	for name := range metricNames {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	tagSuffix := "{" + pactInteractionTag + ":" + intentionalPactMismatchInteraction + "}"
-	for metricName, expectedRate := range map[string]float64{
-		metrics.ChecksName + tagSuffix:        0,
-		metrics.HTTPReqFailedName + tagSuffix: 1,
+	for metricName, expectedValues := range map[string]string{
+		metrics.ChecksName:        "0.00% 0.00 5.00",
+		metrics.HTTPReqFailedName: "100.00% 0.00 5.00",
 	} {
-		index := sort.SearchStrings(names, metricName)
-		if index == len(names) || names[index] != metricName {
-			t.Errorf("Pact report is missing metric %q", metricName)
+		row := pactReportMetricRow(t, reportText, metricName, intentionalPactMismatchInteraction)
+		if !strings.Contains(row, expectedValues) {
+			t.Errorf("Pact report metric %q has row %q, expected values %q", metricName, row, expectedValues)
+		}
+	}
+}
+
+func pactReportMetricRow(t *testing.T, report, metricName, interaction string) string {
+	t.Helper()
+
+	searchFrom := 0
+	metricPrefix := "<b>" + metricName + "{"
+	interactionTag := pactInteractionTag + ":" + interaction
+	for {
+		index := strings.Index(report[searchFrom:], metricPrefix)
+		if index < 0 {
+			t.Fatalf("Pact report is missing tagged metric %q for interaction %q", metricName, interaction)
+		}
+		index += searchFrom
+		rowStart := strings.LastIndex(report[:index], "<tr>")
+		rowEndOffset := strings.Index(report[index:], "</tr>")
+		if rowStart < 0 || rowEndOffset < 0 {
+			t.Fatalf("Pact report metric %q has no complete table row", metricName)
+		}
+		rowEnd := index + rowEndOffset + len("</tr>")
+		row := report[rowStart:rowEnd]
+		if strings.Contains(row, interactionTag) {
+			withoutTags := make([]rune, 0, len(row))
+			insideTag := false
+			for _, character := range row {
+				switch character {
+				case '<':
+					insideTag = true
+				case '>':
+					insideTag = false
+					withoutTags = append(withoutTags, ' ')
+				default:
+					if !insideTag {
+						withoutTags = append(withoutTags, character)
+					}
+				}
+			}
+			return strings.Join(strings.Fields(string(withoutTags)), " ")
+		}
+		searchFrom = rowEnd
+	}
+}
+
+func assertPactFailureInConsoleMetric(t *testing.T, report, metricName, expectedValues string) {
+	t.Helper()
+
+	parentPrefix := "    " + metricName
+	interactionTag := pactInteractionTag + ":" + intentionalPactMismatchInteraction
+	insideMetric := false
+	for line := range strings.SplitSeq(report, "\n") {
+		if after, ok := strings.CutPrefix(line, parentPrefix); ok {
+			remainder := after
+			if strings.HasPrefix(remainder, ".") {
+				insideMetric = true
+				continue
+			}
+		}
+		if !insideMetric {
 			continue
 		}
-		if index >= len(cumulative) {
-			t.Fatalf("Pact report metric %q has no cumulative value", metricName)
+		if strings.HasPrefix(line, "      { ") {
+			if !strings.Contains(line, interactionTag) {
+				continue
+			}
+			compactLine := strings.Join(strings.Fields(line), " ")
+			if !strings.Contains(compactLine, expectedValues) {
+				t.Errorf("console metric %q has failed Pact row %q, expected values %q", metricName, compactLine, expectedValues)
+			}
+			return
 		}
-		var values []float64
-		if err := json.Unmarshal(cumulative[index], &values); err != nil {
-			t.Fatalf("decode Pact report metric %q: %v", metricName, err)
-		}
-		if len(values) != 1 || values[0] != expectedRate {
-			t.Errorf("Pact report metric %q has values %v, expected rate %v", metricName, values, expectedRate)
+		if strings.HasPrefix(line, "    ") && strings.TrimSpace(line) != "" {
+			break
 		}
 	}
+	t.Errorf("console metric %q is missing the failed Pact interaction row", metricName)
 }
 
 func newHTTPBinServer(t *testing.T) *httptest.Server {
@@ -555,10 +628,18 @@ func TestSummaryOutputSplitsPactMetricsByTags(t *testing.T) {
 		With(metrics.TagName.String(), "pact:second")
 
 	var outputBuffer bytes.Buffer
-	output := newSummaryOutput(&outputBuffer, "report.html", "metrics.json", true)
+	output := newSummaryOutput(
+		&outputBuffer,
+		filepath.Join(t.TempDir(), "report.html"),
+		"metrics.json",
+		newRunnerOptions(defaultRunConfig()),
+		true,
+	)
 	at := time.Now()
 	output.AddMetricSamples([]metrics.SampleContainer{metrics.ConnectedSamples{
 		Samples: []metrics.Sample{
+			newSample(builtin.DataReceived, root, at, 1),
+			newSample(builtin.DataSent, root, at, 1),
 			newSample(builtin.HTTPReqs, firstTags, at, 1),
 			newSample(builtin.HTTPReqDuration, firstTags, at, 12),
 			newSample(builtin.HTTPReqFailed, firstTags, at, 0),
@@ -569,17 +650,28 @@ func TestSummaryOutputSplitsPactMetricsByTags(t *testing.T) {
 			newSample(builtin.Checks, secondTags, at, 0),
 		},
 	}})
+	output.SetTestRunDuration(time.Second)
 	if err := output.Stop(); err != nil {
 		t.Fatalf("stop summary output: %v", err)
 	}
 
 	result := outputBuffer.String()
 	for _, fragment := range []string{
-		"metrics by tags:",
-		"consumer-a provider_service=provider-a",
-		"consumer-b provider_service=provider-b",
-		"checks: 1",
-		"failed checks: 1",
+		"█ TOTAL RESULTS",
+		"checks_total.......: 2",
+		"checks_succeeded...: 50.00% 1 out of 2",
+		"checks_failed......: 50.00% 1 out of 2",
+		"CUSTOM",
+		"\n    checks.",
+		"consumer_service:consumer-a,provider_service:provider-a",
+		"consumer_service:consumer-b,provider_service:provider-b",
+		"HTTP",
+		"http_req_duration",
+		"http_req_failed",
+		"http_reqs",
+		"NETWORK",
+		"data_received",
+		"data_sent",
 	} {
 		if !strings.Contains(result, fragment) {
 			t.Errorf("summary output is missing %q:\n%s", fragment, result)

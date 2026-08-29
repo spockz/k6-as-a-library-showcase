@@ -338,7 +338,7 @@ func activateNativeVUForTest(
 	id uint64,
 ) activeNativeVUTest {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	initialized, err := runner.NewVU(ctx, id, id, out)
 	if err != nil {

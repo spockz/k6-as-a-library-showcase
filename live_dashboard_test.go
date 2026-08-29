@@ -76,7 +76,7 @@ func TestLiveDashboardServesUIAndStreamsSnapshots(t *testing.T) {
 		},
 	}})
 
-	requestContext, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	requestContext, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	request, err := http.NewRequestWithContext(
 		requestContext,
 		http.MethodGet,

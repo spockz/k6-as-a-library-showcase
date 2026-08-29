@@ -3,6 +3,7 @@ module k6-as-a-library
 go 1.26.6
 
 require (
+	github.com/grafana/sobek v0.0.0-20260429085637-a66d4790012b
 	github.com/grafana/xk6-dashboard v0.8.1
 	github.com/mccutchen/go-httpbin/v2 v2.25.0
 	github.com/pact-foundation/pact-go/v2 v2.5.1
@@ -18,9 +19,12 @@ require (
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
+	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
+	github.com/google/pprof v0.0.0-20230728192033-2ba5b33183c6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/grafana/xk6-dashboard-assets v0.1.2 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 // indirect

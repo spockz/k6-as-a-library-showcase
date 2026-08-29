@@ -2,15 +2,17 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/printer"
 	"go/token"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -30,8 +32,8 @@ func TestJSONOutputSchemaMatchesK6Internal(t *testing.T) {
 		local        reflect.Type
 		upstreamType string
 	}{
-		{name: "metric", local: reflect.TypeOf(metricEnvelope{}), upstreamType: "metricEnvelope"},
-		{name: "point", local: reflect.TypeOf(pointEnvelope{}), upstreamType: "sampleEnvelope"},
+		{name: "metric", local: reflect.TypeFor[metricEnvelope](), upstreamType: "metricEnvelope"},
+		{name: "point", local: reflect.TypeFor[pointEnvelope](), upstreamType: "sampleEnvelope"},
 	}
 
 	for _, test := range tests {
@@ -65,10 +67,9 @@ func localWireSchema(root reflect.Type) []wireField {
 }
 
 func collectLocalFields(current reflect.Type, parentPath, localPackage string, fields *[]wireField) {
-	for index := range current.NumField() {
-		field := current.Field(index)
+	for field := range current.Fields() {
 		jsonTag := field.Tag.Get("json")
-		jsonName := strings.Split(jsonTag, ",")[0]
+		jsonName := wireJSONFieldName(jsonTag)
 		path := jsonName
 		if parentPath != "" {
 			path = parentPath + "." + jsonName
@@ -87,8 +88,7 @@ func reflectTypeName(value reflect.Type) string {
 		if value.PkgPath() == "" {
 			return value.Name()
 		}
-		parts := strings.Split(value.PkgPath(), "/")
-		return parts[len(parts)-1] + "." + value.Name()
+		return path.Base(value.PkgPath()) + "." + value.Name()
 	}
 
 	switch value.Kind() {
@@ -106,7 +106,7 @@ func reflectTypeName(value reflect.Type) string {
 func k6WireSchema(t *testing.T, typeName string) []wireField {
 	t.Helper()
 
-	command := exec.Command("go", "list", "-m", "-f={{.Dir}}", "go.k6.io/k6")
+	command := exec.CommandContext(t.Context(), "go", "list", "-m", "-f={{.Dir}}", "go.k6.io/k6")
 	output, err := command.Output()
 	if err != nil {
 		t.Fatalf("locate k6 module: %v", err)
@@ -156,7 +156,7 @@ func collectK6Fields(t *testing.T, current *ast.StructType, parentPath string, f
 			t.Fatalf("decode k6 struct tag: %v", err)
 		}
 		jsonTag := reflect.StructTag(tag).Get("json")
-		jsonName := strings.Split(jsonTag, ",")[0]
+		jsonName := wireJSONFieldName(jsonTag)
 		path := jsonName
 		if parentPath != "" {
 			path = parentPath + "." + jsonName
@@ -175,7 +175,12 @@ func collectK6Fields(t *testing.T, current *ast.StructType, parentPath string, f
 }
 
 func sortWireFields(fields []wireField) {
-	sort.Slice(fields, func(left, right int) bool {
-		return fields[left].Path < fields[right].Path
+	slices.SortFunc(fields, func(left, right wireField) int {
+		return cmp.Compare(left.Path, right.Path)
 	})
+}
+
+func wireJSONFieldName(tag string) string {
+	name, _, _ := strings.Cut(tag, ",")
+	return name
 }

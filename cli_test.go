@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestRunCommandHelpListsConfigurationFlags(t *testing.T) {
@@ -17,7 +15,7 @@ func TestRunCommandHelpListsConfigurationFlags(t *testing.T) {
 	command.SetErr(&output)
 	command.SetArgs([]string{"run", "--help"})
 
-	if err := command.ExecuteContext(context.Background()); err != nil {
+	if err := command.ExecuteContext(t.Context()); err != nil {
 		t.Fatalf("execute help: %v", err)
 	}
 	for _, flag := range []string{
@@ -47,32 +45,6 @@ func TestDashboardIsDisabledByDefault(t *testing.T) {
 	config := defaultRunConfig()
 	if config.dashboard {
 		t.Fatal("dashboard is enabled by default")
-	}
-}
-
-func TestDashboardPeriodTracksObservedRuntime(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		runtime  time.Duration
-		expected time.Duration
-	}{
-		{name: "short run", runtime: 250 * time.Millisecond, expected: time.Second},
-		{name: "thirty seconds", runtime: 30 * time.Second, expected: time.Second},
-		{name: "five minutes", runtime: 5 * time.Minute, expected: 2 * time.Second},
-		{name: "long run", runtime: time.Hour, expected: 10 * time.Second},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			actual := dashboardPeriod(test.runtime)
-			if actual != test.expected {
-				t.Fatalf("expected dashboard period %s, got %s", test.expected, actual)
-			}
-		})
 	}
 }
 
@@ -109,7 +81,7 @@ func TestRunCommandRejectsInvalidArguments(t *testing.T) {
 			command.SetOut(&bytes.Buffer{})
 			command.SetErr(&bytes.Buffer{})
 			command.SetArgs(test.args)
-			if err := command.ExecuteContext(context.Background()); err == nil {
+			if err := command.ExecuteContext(t.Context()); err == nil {
 				t.Fatal("expected command to reject invalid arguments")
 			}
 		})

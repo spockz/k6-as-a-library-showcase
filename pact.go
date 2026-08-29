@@ -8,13 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -48,7 +49,7 @@ var (
 		pactDescriptionMeta,
 	}
 	pactSummaryTags = append(
-		append([]string(nil), pactRequestTagNames...),
+		slices.Clone(pactRequestTagNames),
 		metrics.TagName.String(),
 	)
 )
@@ -144,7 +145,7 @@ func loadPactDirectory(directory string) ([]pactInteraction, error) {
 	if err != nil {
 		return nil, fmt.Errorf("walk PACT directory %q: %w", directory, err)
 	}
-	sort.Strings(filenames)
+	slices.Sort(filenames)
 	if len(filenames) == 0 {
 		return nil, fmt.Errorf("PACT directory %q contains no JSON pact files", directory)
 	}
@@ -198,7 +199,11 @@ func loadPactFile(filename string) ([]pactInteraction, error) {
 		}
 		interaction.Response.rules = rules
 		interaction.PactFile = filename
-		interaction.Name = pactInteractionName(interaction)
+		name, err := pactInteractionName(interaction)
+		if err != nil {
+			return nil, fmt.Errorf("name PACT file %q interaction %d: %w", filename, index, err)
+		}
+		interaction.Name = name
 		interaction.Tags = pactInteractionTags(interaction, document.Consumer.Name, document.Provider.Name)
 		interactions[index] = interaction
 	}
@@ -210,9 +215,7 @@ func loadPactFile(filename string) ([]pactInteraction, error) {
 func mergePactMatchingRules(groups ...map[string]json.RawMessage) map[string]json.RawMessage {
 	merged := make(map[string]json.RawMessage)
 	for _, group := range groups {
-		for key, value := range group {
-			merged[key] = value
-		}
+		maps.Copy(merged, group)
 	}
 	return merged
 }
@@ -243,24 +246,27 @@ func validatePactInteraction(interaction pactInteraction, index int, filename st
 	return nil
 }
 
-func pactInteractionName(interaction pactInteraction) string {
+func pactInteractionName(interaction pactInteraction) (string, error) {
 	identifier := interaction.ID
 	if identifier == "" {
 		identifier = interaction.Key
 	}
 	if identifier != "" {
-		return "pact:" + identifier
+		return "pact:" + identifier, nil
 	}
 	if interaction.Description != "" {
-		return "pact:" + interaction.Description
+		return "pact:" + interaction.Description, nil
 	}
 
-	seed, _ := json.Marshal(struct {
+	seed, err := json.Marshal(struct {
 		Method string `json:"method"`
 		Path   string `json:"path"`
 	}{Method: interaction.Request.Method, Path: interaction.Request.Path})
+	if err != nil {
+		return "", fmt.Errorf("encode fallback interaction name: %w", err)
+	}
 	digest := sha256.Sum256(seed)
-	return "pact:" + hex.EncodeToString(digest[:])[:12]
+	return "pact:" + hex.EncodeToString(digest[:])[:12], nil
 }
 
 func pactInteractionTags(interaction pactInteraction, consumer, provider string) map[string]string {
@@ -378,11 +384,7 @@ func pactQueryString(rawQuery json.RawMessage) (string, error) {
 		return "", fmt.Errorf("decode Pact query: %w", err)
 	}
 	values := make(url.Values, len(queryValues))
-	keys := make([]string, 0, len(queryValues))
-	for key := range queryValues {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(queryValues))
 	for _, key := range keys {
 		items, err := pactRawStringValues(queryValues[key])
 		if err != nil {
@@ -453,11 +455,7 @@ func pactRequestCookies(rawCookies json.RawMessage) (map[string]*httpext.HTTPReq
 }
 
 func applyPactHeaders(request *http.Request, rawHeaders map[string]json.RawMessage) error {
-	keys := make([]string, 0, len(rawHeaders))
-	for key := range rawHeaders {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(rawHeaders))
 	for _, key := range keys {
 		values, err := pactRawStringValues(rawHeaders[key])
 		if err != nil {
@@ -528,7 +526,7 @@ func pactBodyBytes(raw json.RawMessage) ([]byte, error) {
 	if !json.Valid(trimmed) {
 		return nil, errors.New("body is not valid JSON")
 	}
-	return append([]byte(nil), trimmed...), nil
+	return bytes.Clone(trimmed), nil
 }
 
 func matchPactResponse(expected pactHTTPResponse, actual *httpext.Response) error {
@@ -564,11 +562,7 @@ func matchPactCookies(expectedRaw json.RawMessage, actual map[string][]*httpext.
 	if err := json.Unmarshal(trimmed, &expected); err != nil {
 		return fmt.Errorf("cookies: invalid expectation: %w", err)
 	}
-	keys := make([]string, 0, len(expected))
-	for key := range expected {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(expected))
 	var mismatches []error
 	for _, key := range keys {
 		expectedValues, err := pactRawStringValues(expected[key])
@@ -603,11 +597,7 @@ func matchPactCookies(expectedRaw json.RawMessage, actual map[string][]*httpext.
 }
 
 func matchPactHeaders(expected map[string]json.RawMessage, actual map[string]string, rules map[string]pactRule) error {
-	keys := make([]string, 0, len(expected))
-	for key := range expected {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(expected))
 	var mismatches []error
 	for _, key := range keys {
 		expectedValues, err := pactRawStringValues(expected[key])
@@ -702,7 +692,7 @@ func responseBodyBytes(body any) ([]byte, error) {
 	case string:
 		return []byte(value), nil
 	case []byte:
-		return append([]byte(nil), value...), nil
+		return bytes.Clone(value), nil
 	default:
 		encoded, err := json.Marshal(value)
 		if err != nil {
@@ -750,11 +740,7 @@ func matchPactJSONValue(expected, actual any, path string, rules map[string]pact
 		if len(expectedValue) == 0 && len(actualValue) > 0 && !hasRule {
 			return fmt.Errorf("%s: expected an empty object, got %d fields", path, len(actualValue))
 		}
-		keys := make([]string, 0, len(expectedValue))
-		for key := range expectedValue {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
+		keys := slices.Sorted(maps.Keys(expectedValue))
 		for _, key := range keys {
 			actualField, ok := actualValue[key]
 			if !ok {
@@ -1044,11 +1030,7 @@ func isPactBoolean(value any) bool {
 
 func flattenPactRules(raw map[string]json.RawMessage) (map[string]pactRule, error) {
 	rules := make(map[string]pactRule)
-	keys := make([]string, 0, len(raw))
-	for key := range raw {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(raw))
 	for _, key := range keys {
 		if err := collectPactRules(rules, key, raw[key], ""); err != nil {
 			return nil, err
@@ -1075,11 +1057,7 @@ func collectPactRules(rules map[string]pactRule, path string, raw json.RawMessag
 	if category == "" && isPactRuleCategory(path) {
 		nestedCategory = path
 	}
-	keys := make([]string, 0, len(object))
-	for key := range object {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(object))
 	for _, key := range keys {
 		nestedPath := key
 		if !strings.HasPrefix(key, "$") && nestedCategory == "" && path != "" {

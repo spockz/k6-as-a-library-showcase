@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +11,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -21,7 +20,6 @@ import (
 	"github.com/sirupsen/logrus"
 	"gopkg.in/guregu/null.v3"
 
-	"go.k6.io/k6/cmd/state"
 	"go.k6.io/k6/errext"
 	"go.k6.io/k6/lib"
 	"go.k6.io/k6/lib/executor"
@@ -44,13 +42,13 @@ const (
 	defaultHTMLFilename         = "report.html"
 	defaultDashboardHost        = "127.0.0.1"
 	defaultDashboardPort        = 5665
-	dashboardTargetPoints       = 200
 	dashboardMinPeriod          = time.Second
-	dashboardMaxPeriod          = 10 * time.Second
-	dashboardPeriodStep         = time.Second
 	defaultMaxRedirects         = int64(10)
 	defaultBatchSize            = int64(20)
 	defaultBatchSizePerHost     = int64(6)
+	expectedResponseSubmetric   = "expected_response:true"
+	pactResponseCheckSubmetric  = "check:" + pactResponseCheckName
+	pactResponsesValidThreshold = "rate==1"
 )
 
 type runConfig struct {
@@ -89,7 +87,10 @@ func defaultRunConfig() runConfig {
 
 func (config runConfig) validate() error {
 	target, err := url.ParseRequestURI(config.targetURL)
-	if err != nil || target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
+	if err != nil {
+		return fmt.Errorf("parse HTTP URL %q: %w", config.targetURL, err)
+	}
+	if target.Host == "" || (target.Scheme != "http" && target.Scheme != "https") {
 		return fmt.Errorf("invalid HTTP URL %q", config.targetURL)
 	}
 	if config.pactDirectory != "" {
@@ -503,7 +504,42 @@ func newRunnerOptions(config runConfig) lib.Options {
 		SystemTags:            &systemTags,
 		NoCookiesReset:        null.BoolFrom(false),
 		DiscardResponseBodies: null.BoolFrom(true),
+		SummaryTrendStats:     slices.Clone(lib.DefaultSummaryTrendStats),
 	}
+}
+
+func initializeSummarySubmetrics(builtin *metrics.BuiltinMetrics, options lib.Options) error {
+	if options.SystemTags == nil || !options.SystemTags.Has(metrics.TagExpectedResponse) {
+		return nil
+	}
+	if _, err := builtin.HTTPReqDuration.AddSubmetric(expectedResponseSubmetric); err != nil {
+		return fmt.Errorf("initialize expected-response duration submetric: %w", err)
+	}
+	return nil
+}
+
+func initializePactResponseThreshold(
+	registry *metrics.Registry,
+	builtin *metrics.BuiltinMetrics,
+	options *lib.Options,
+) error {
+	submetric, err := builtin.Checks.AddSubmetric(pactResponseCheckSubmetric)
+	if err != nil {
+		return fmt.Errorf("initialize Pact response check submetric: %w", err)
+	}
+	thresholds := metrics.NewThresholds([]string{pactResponsesValidThreshold})
+	if err := thresholds.Parse(); err != nil {
+		return fmt.Errorf("parse Pact response threshold: %w", err)
+	}
+	if err := thresholds.Validate(submetric.Name, registry); err != nil {
+		return fmt.Errorf("validate Pact response threshold: %w", err)
+	}
+	submetric.Metric.Thresholds = thresholds
+	if options.Thresholds == nil {
+		options.Thresholds = make(map[string]metrics.Thresholds)
+	}
+	options.Thresholds[submetric.Name] = thresholds
+	return nil
 }
 
 func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) error {
@@ -528,6 +564,14 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) error 
 		}
 	}
 	options := newRunnerOptions(config)
+	if len(interactions) > 0 {
+		if err := initializePactResponseThreshold(registry, builtin, &options); err != nil {
+			return err
+		}
+	}
+	if err := initializeSummarySubmetrics(builtin, options); err != nil {
+		return err
+	}
 	dnsTTL, err := types.ParseExtendedDuration(options.DNS.TTL.String)
 	if err != nil {
 		return fmt.Errorf("parse default DNS TTL: %w", err)
@@ -615,7 +659,13 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) error 
 		ExecutionPlan:  requirements,
 	}
 	jsonOutput := newJSONOutput(config.jsonFilename)
-	consoleOutput := newSummaryOutput(stdout, config.htmlFilename, config.jsonFilename, len(interactions) > 0)
+	consoleOutput := newSummaryOutput(
+		stdout,
+		config.htmlFilename,
+		config.jsonFilename,
+		options,
+		len(interactions) > 0,
+	)
 	outputs := make([]output.Output, 0, 3)
 	if config.dashboard {
 		if err := ensureDashboardAddressAvailable(config.dashboardHost, config.dashboardPort); err != nil {
@@ -651,22 +701,20 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) error 
 	observedRuntime := time.Since(startedAt)
 	close(out)
 	waitForOutputs()
+	consoleOutput.SetTestRunDuration(observedRuntime)
 	finishOutputs(runErr)
+	var resultErr error
 	if runErr != nil {
-		return fmt.Errorf("run k6 executor: %w", runErr)
+		resultErr = errors.Join(resultErr, fmt.Errorf("run k6 executor: %w", runErr))
 	}
 	if err := jsonOutput.Err(); err != nil {
-		return fmt.Errorf("write JSON metrics: %w", err)
+		resultErr = errors.Join(resultErr, fmt.Errorf("write JSON metrics: %w", err))
 	}
-	if err := generateHTMLReport(
-		ctx,
-		config.jsonFilename,
-		config.htmlFilename,
-		logger,
-		dashboardPeriod(observedRuntime),
-		len(interactions) > 0,
-	); err != nil {
-		return err
+	if err := consoleOutput.Err(); err != nil {
+		resultErr = errors.Join(resultErr, fmt.Errorf("write summaries: %w", err))
+	}
+	if resultErr != nil {
+		return resultErr
 	}
 	if err := validateArtifact(config.htmlFilename); err != nil {
 		return err
@@ -755,133 +803,6 @@ func truncateArtifact(filename string) error {
 	}
 	if err := file.Close(); err != nil {
 		return fmt.Errorf("prepare %s: %w", filename, err)
-	}
-	return nil
-}
-
-func dashboardPeriod(runtime time.Duration) time.Duration {
-	period := runtime / dashboardTargetPoints
-	if period < dashboardMinPeriod {
-		return dashboardMinPeriod
-	}
-	if period > dashboardMaxPeriod {
-		return dashboardMaxPeriod
-	}
-	return ((period + dashboardPeriodStep - 1) / dashboardPeriodStep) * dashboardPeriodStep
-}
-
-func generateHTMLReport(
-	ctx context.Context,
-	jsonFilename string,
-	htmlFilename string,
-	logger *logrus.Logger,
-	period time.Duration,
-	pactMode ...bool,
-) (resultErr error) {
-	eventsFile, err := os.CreateTemp("", "k6-dashboard-*.ndjson")
-	if err != nil {
-		return fmt.Errorf("create temporary dashboard events file: %w", err)
-	}
-	eventsFilename := eventsFile.Name()
-	if err := eventsFile.Close(); err != nil {
-		return errors.Join(
-			fmt.Errorf("close temporary dashboard events file: %w", err),
-			removeTemporaryFile(eventsFilename),
-		)
-	}
-	defer func() {
-		resultErr = errors.Join(resultErr, removeTemporaryFile(eventsFilename))
-	}()
-
-	globalState := state.NewGlobalState(ctx)
-	globalState.FS = fsext.NewOsFs()
-	globalState.Env = map[string]string{}
-	globalState.Logger = logger
-	globalState.FallbackLogger = logger
-
-	aggregateArgs := []string{"aggregate", jsonFilename, eventsFilename, "--period", period.String()}
-	if len(pactMode) > 0 && pactMode[0] {
-		for _, tag := range pactSummaryTags {
-			aggregateArgs = append(aggregateArgs, "--tags", tag)
-		}
-	}
-	if err := executeDashboardCommand(ctx, globalState, aggregateArgs); err != nil {
-		return fmt.Errorf("aggregate dashboard observations: %w", err)
-	}
-	if err := addDashboardAggregates(eventsFilename); err != nil {
-		return err
-	}
-	if err := executeDashboardCommand(
-		ctx,
-		globalState,
-		[]string{"report", eventsFilename, htmlFilename},
-	); err != nil {
-		return fmt.Errorf("render HTML report: %w", err)
-	}
-
-	return nil
-}
-
-func executeDashboardCommand(ctx context.Context, globalState *state.GlobalState, args []string) error {
-	command := dashboard.NewCommand(globalState)
-	command.SilenceErrors = true
-	command.SilenceUsage = true
-	command.SetArgs(args)
-	return command.ExecuteContext(ctx)
-}
-
-func addDashboardAggregates(filename string) error {
-	events, err := os.ReadFile(filename)
-	if err != nil {
-		return fmt.Errorf("read dashboard events: %w", err)
-	}
-	lineEnd := bytes.IndexByte(events, '\n')
-	if lineEnd < 0 {
-		return fmt.Errorf("normalize dashboard events: parameter event is missing")
-	}
-
-	var parameterEvent struct {
-		Event string                     `json:"event"`
-		Data  map[string]json.RawMessage `json:"data"`
-	}
-	if err := json.Unmarshal(events[:lineEnd], &parameterEvent); err != nil {
-		return fmt.Errorf("decode dashboard parameter event: %w", err)
-	}
-	if parameterEvent.Event != "param" {
-		return fmt.Errorf("normalize dashboard events: first event is %q, expected %q", parameterEvent.Event, "param")
-	}
-	aggregates, err := json.Marshal(dashboardAggregates())
-	if err != nil {
-		return fmt.Errorf("encode dashboard aggregates: %w", err)
-	}
-	parameterEvent.Data["aggregates"] = aggregates
-	parameterLine, err := json.Marshal(parameterEvent)
-	if err != nil {
-		return fmt.Errorf("encode dashboard parameter event: %w", err)
-	}
-
-	normalized := make([]byte, 0, len(parameterLine)+1+len(events)-lineEnd-1)
-	normalized = append(normalized, parameterLine...)
-	normalized = append(normalized, '\n')
-	normalized = append(normalized, events[lineEnd+1:]...)
-	if err := os.WriteFile(filename, normalized, 0o600); err != nil {
-		return fmt.Errorf("write dashboard events: %w", err)
-	}
-	return nil
-}
-
-func dashboardAggregates() map[string][]string {
-	return map[string][]string{
-		metrics.Counter.String(): {"count", "rate"},
-		metrics.Gauge.String():   {"value"},
-		metrics.Rate.String():    {"rate"},
-		metrics.Trend.String():   {"avg", "max", "med", "min", "p(90)", "p(95)", "p(99)"},
-	}
-}
-
-func removeTemporaryFile(filename string) error {
-	if err := os.Remove(filename); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove temporary dashboard events file: %w", err)
 	}
 	return nil
 }

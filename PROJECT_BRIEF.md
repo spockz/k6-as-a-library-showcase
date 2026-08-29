@@ -7,7 +7,8 @@ requiring JavaScript workload definitions.
 
 Reuse k6's public Go APIs for execution, virtual users, built-in metrics, HTTP
 requests, and outputs. Keep local compatibility code limited to functionality
-that k6 or xk6-dashboard exposes only through internal packages.
+that k6 exposes only through internal packages or that the selected report
+renderer expects from k6's internal summary pipeline.
 
 ## Intended inputs
 
@@ -22,15 +23,18 @@ The eventual benchmark generator should combine:
 
 ## Current scope
 
-The current program executes a fixed HTTP GET workload using k6 shared
-iterations. It provides:
+The current program executes a fixed HTTP GET workload or Pact interactions
+using k6 shared iterations. It provides:
 
 - configurable VUs, iterations, minimum iteration duration, request timeout,
   and maximum duration
 - k6-compatible JSON metric observations
-- a final xk6-dashboard HTML report
+- a sectioned k6-style terminal report covering every observed metric and Pact
+  tag submetric
+- a final table-oriented k6-reporter HTML summary generated in process
+- a `rate==1` threshold on Pact response checks requiring every response to
+  match its contract
 - an optional live dashboard
-- a small console summary
 - CLI, metrics, HTTP behavior, report, and dashboard tests
 
 The fixed workload is intentionally narrower than a general replacement for
@@ -71,8 +75,13 @@ the k6 CLI or JavaScript runtime.
 
 - Fan metric samples out through output.Manager.
 - Keep JSON observations compatible with the k6 multiline JSON envelope.
-- Generate the final report using xk6-dashboard's aggregate and report
-  commands.
+- Build a k6-compatible `handleSummary(data)` model from public metric sinks,
+  checks, and groups.
+- Render a k6 v1.8.1-compatible terminal summary from that same finalized model,
+  with metric categories, checks, groups, thresholds, units, alignment, and
+  TTY-gated ANSI colors.
+- Render the final report with the vendored k6-reporter v3.0.4 CommonJS bundle
+  in k6's Goja-derived Sobek runtime.
 - Keep the live dashboard disabled by default.
 - Validate generated JSON and HTML artifacts.
 - Surface output and artifact errors rather than silently ignoring them.
@@ -83,21 +92,30 @@ the k6 CLI or JavaScript runtime.
    k6's one-second ticker.
 2. The JSON output is a local compatibility implementation. It buffers samples
    until shutdown instead of flushing every 200 milliseconds.
-3. Threshold configuration, propagation, evaluation, and failure reporting are
-   not implemented.
-4. xk6-dashboard's aggregate command omits aggregate names required by its
-   report data. The local compatibility step is coupled to the pinned
-   xk6-dashboard version.
+3. General threshold configuration, periodic evaluation, abort behavior, taint
+   propagation, and threshold-based process status are not implemented. Pact
+   mode attaches `rate==1` to `checks{check:pact response matches}`; attached
+   thresholds are evaluated in the final local summary.
+4. The canonical k6 summary collector and `handleSummary(data)` construction
+   are internal. The final report uses a local compatibility model and a pinned
+   third-party renderer.
 5. lib.Runner references an internal summary type. The native runner therefore
    embeds lib.Runner and only safely overrides methods used by the direct
    executor path.
 6. The fixed request does not set the k6 CLI user agent, so Go supplies its
    default user agent.
-7. Response bodies are always discarded, unlike the k6 CLI default.
+7. The fixed workload discards response bodies, while Pact mode retains them
+   for response verification.
 8. Cancellation can suppress data_sent and data_received because IOSamples are
    sent through metrics.PushIfNotDone with the canceled VU context.
-9. The console summary is custom and reports only request count, failure count,
-   and average request duration.
+9. The canonical terminal summary packages are internal. A local Go renderer
+   follows k6 v1.8.1's current sectioned report and consumes the same finalized
+   compatibility model as the HTML renderer. It displays all metrics observed
+   by this workload rather than reproducing k6's compact/full collection
+   filters, and it has no scenario report or progress UI. Those scope choices
+   are not caused by the internal-package boundary. Remove the local renderer
+   if k6 exposes this functionality publicly or the module moves into the k6
+   source tree.
 
 ## Next priorities
 
@@ -109,7 +127,8 @@ the k6 CLI or JavaScript runtime.
 4. Add threshold configuration and evaluation based on generated SLA/SLO
    inputs.
 5. Replace shutdown-only JSON buffering with periodic streaming.
-6. Expand the summary only where it supports the generated benchmark workflow.
+6. Keep the terminal compatibility renderer aligned with the pinned k6 version
+   until a public reporting API is available.
 
 ## Testing expectations
 
@@ -119,7 +138,10 @@ the k6 CLI or JavaScript runtime.
 - Cover network error tags and error codes.
 - Cover per-VU cookie isolation.
 - Cover iteration pacing and cancellation.
-- Cover required dashboard metrics and report snapshots.
+- Cover required live-dashboard metrics and observable k6-reporter HTML
+  content.
+- Cover terminal metric categories, typed values, thresholds, checks, groups,
+  ANSI colors, and Pact-tagged submetrics.
 - Keep JSON schema compatibility checks against the pinned k6 source.
 - Run gofmt, gopls diagnostics, go vet, the full test suite, and the race
   detector after Go changes.
