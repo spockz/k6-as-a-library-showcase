@@ -1,4 +1,5 @@
-package main
+// This file verifies Pact request execution, response checks, and Pact reports.
+package app
 
 import (
 	"bytes"
@@ -6,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,223 +32,21 @@ type pactMetricPointData struct {
 	Metadata map[string]string `json:"metadata"`
 }
 
-func TestLoadPactDirectoryLoadsAllInteractions(t *testing.T) {
-	t.Parallel()
-
-	interactions, err := loadPactDirectory(filepath.Join("testdata", "pacts"))
-	if err != nil {
-		t.Fatalf("load PACT directory: %v", err)
-	}
-	if len(interactions) != 9 {
-		t.Fatalf("expected nine interactions, got %d", len(interactions))
-	}
-
-	expected := []struct {
-		name          string
-		consumer      string
-		provider      string
-		endpoint      string
-		providerState string
-	}{
-		{
-			name:     "pact:inspect GET query parameters",
-			consumer: "httpbin-request-consumer",
-			provider: "httpbin",
-			endpoint: "GET /get",
-		},
-		{
-			name:     "pact:echo a JSON POST body",
-			consumer: "httpbin-request-consumer",
-			provider: "httpbin",
-			endpoint: "POST /post",
-		},
-		{
-			name:     "pact:return a JSON document",
-			consumer: "httpbin-response-consumer",
-			provider: "httpbin",
-			endpoint: "GET /json",
-		},
-		{
-			name:     "pact:return decoded text",
-			consumer: "httpbin-response-consumer",
-			provider: "httpbin",
-			endpoint: "GET /base64/UGFjdCBleGFtcGxl",
-		},
-		{
-			name:     "pact:return custom response headers",
-			consumer: "httpbin-response-consumer",
-			provider: "httpbin",
-			endpoint: "GET /response-headers",
-		},
-		{
-			name:     "pact:set a cookie with a redirect",
-			consumer: "httpbin-response-consumer",
-			provider: "httpbin",
-			endpoint: "GET /cookies/set",
-		},
-		{
-			name:     "pact:return no content",
-			consumer: "httpbin-response-consumer",
-			provider: "httpbin",
-			endpoint: "GET /status/204",
-		},
-		{
-			name:          "pact:return a teapot response",
-			consumer:      "httpbin-response-consumer",
-			provider:      "httpbin",
-			endpoint:      "GET /status/418",
-			providerState: "httpbin supports teapot responses",
-		},
-		{
-			name:     "pact:" + intentionalPactMismatchInteraction,
-			consumer: "httpbin-response-consumer",
-			provider: "httpbin",
-			endpoint: "GET /status/200",
-		},
-	}
-	for index, want := range expected {
-		interaction := interactions[index]
-		if interaction.Name != want.name {
-			t.Errorf("interaction %d name: expected %q, got %q", index, want.name, interaction.Name)
-		}
-		if interaction.Tags[pactConsumerTag] != want.consumer {
-			t.Errorf("interaction %d consumer tag: expected %q, got %q", index, want.consumer, interaction.Tags[pactConsumerTag])
-		}
-		if interaction.Tags[pactProviderTag] != want.provider {
-			t.Errorf("interaction %d provider tag: expected %q, got %q", index, want.provider, interaction.Tags[pactProviderTag])
-		}
-		if interaction.Tags[pactEndpointTag] != want.endpoint {
-			t.Errorf("interaction %d endpoint tag: expected %q, got %q", index, want.endpoint, interaction.Tags[pactEndpointTag])
-		}
-		if interaction.Tags[pactProviderStateTag] != want.providerState {
-			t.Errorf("interaction %d provider-state tag: expected %q, got %q", index, want.providerState, interaction.Tags[pactProviderStateTag])
-		}
-		if interaction.PactFile == "" {
-			t.Errorf("interaction %d is missing its source pact file", index)
-		}
-	}
-}
-
-func TestPactInteractionURLAndRequestPreparation(t *testing.T) {
-	t.Parallel()
-
-	interactions, err := loadPactDirectory(filepath.Join("testdata", "pacts"))
-	if err != nil {
-		t.Fatalf("load PACT directory: %v", err)
-	}
-	base, err := url.Parse("https://provider.example/api/")
-	if err != nil {
-		t.Fatalf("parse provider URL: %v", err)
-	}
-	if err := bindPactInteractionURLs(interactions, base); err != nil {
-		t.Fatalf("bind PACT URLs: %v", err)
-	}
-
-	getRequest, err := interactions[0].prepareRequest()
-	if err != nil {
-		t.Fatalf("prepare GET request: %v", err)
-	}
-	if got := getRequest.Request.Method; got != http.MethodGet {
-		t.Errorf("GET request method: expected %s, got %s", http.MethodGet, got)
-	}
-	if got := getRequest.Request.URL.String(); got != "https://provider.example/api/get?format=json&source=pact" {
-		t.Errorf("GET request URL: expected %q, got %q", "https://provider.example/api/get?format=json&source=pact", got)
-	}
-	if got := getRequest.Request.Header.Get("Accept"); got != "application/json" {
-		t.Errorf("GET request Accept header: expected %q, got %q", "application/json", got)
-	}
-
-	postRequest, err := interactions[1].prepareRequest()
-	if err != nil {
-		t.Fatalf("prepare POST request: %v", err)
-	}
-	if got := postRequest.Request.Method; got != http.MethodPost {
-		t.Errorf("POST request method: expected %s, got %s", http.MethodPost, got)
-	}
-	if got := postRequest.Request.URL.String(); got != "https://provider.example/api/post" {
-		t.Errorf("POST request URL: expected %q, got %q", "https://provider.example/api/post", got)
-	}
-	body, err := io.ReadAll(postRequest.Body)
-	if err != nil {
-		t.Fatalf("read POST request body: %v", err)
-	}
-	var decodedBody map[string]any
-	if err := json.Unmarshal(body, &decodedBody); err != nil {
-		t.Fatalf("decode POST request body: %v", err)
-	}
-	if decodedBody["message"] != "hello from Pact" {
-		t.Fatalf("unexpected POST request body: %s", body)
-	}
-}
-
-func TestPactResponseMatchingChecksStatusHeadersAndBody(t *testing.T) {
-	t.Parallel()
-
-	interactions, err := loadPactDirectory(filepath.Join("testdata", "pacts"))
-	if err != nil {
-		t.Fatalf("load PACT directory: %v", err)
-	}
-	expected := interactions[1].Response
-	matching := &httpext.Response{
-		Status:  200,
-		Headers: map[string]string{"content-type": "application/json; charset=utf-8"},
-		Body:    []byte(`{"json":{"message":"hello from Pact"},"origin":"127.0.0.1"}`),
-	}
-	if err := matchPactResponse(expected, matching); err != nil {
-		t.Fatalf("matching PACT response: %v", err)
-	}
-
-	mismatch := &httpext.Response{
-		Status:  201,
-		Headers: map[string]string{"Content-Type": "text/plain"},
-		Body:    []byte(`{"json":{"message":"wrong"}}`),
-	}
-	err = matchPactResponse(expected, mismatch)
-	if err == nil {
-		t.Fatal("expected PACT response mismatch")
-	}
-	for _, fragment := range []string{"status", "header", "body"} {
-		if !strings.Contains(err.Error(), fragment) {
-			t.Errorf("mismatch does not mention %s: %v", fragment, err)
-		}
-	}
-}
-
-func TestPactResponseMatchingChecksCookies(t *testing.T) {
-	t.Parallel()
-
-	expected := pactHTTPResponse{
-		Status:  http.StatusOK,
-		Cookies: json.RawMessage(`{"session":"active"}`),
-	}
-	actual := &httpext.Response{
-		Status: http.StatusOK,
-		Cookies: map[string][]*httpext.HTTPCookie{
-			"session": {&httpext.HTTPCookie{Value: "active"}},
-		},
-	}
-	if err := matchPactResponse(expected, actual); err != nil {
-		t.Fatalf("matching PACT response cookie: %v", err)
-	}
-	actual.Cookies["session"][0].Value = "expired"
-	if err := matchPactResponse(expected, actual); err == nil {
-		t.Fatal("expected PACT cookie mismatch")
-	}
-}
-
 func TestNativeVUPactInteractionsUseRequestsTagsAndChecks(t *testing.T) {
 	server := newHTTPBinServer(t)
 	defer server.Close()
 
 	harness := newNativeVUTestHarness(t, server.URL, 0)
-	interactions, err := loadPactDirectory(filepath.Join("testdata", "pacts"))
+	interactions, err := loadPactDirectory(pactFixtureDirectory())
 	if err != nil {
 		t.Fatalf("load PACT directory: %v", err)
 	}
-	if err := bindPactInteractionURLs(interactions, harness.runner.targetURL.GetURL()); err != nil {
-		t.Fatalf("bind PACT URLs: %v", err)
+	execution, err := synthesizeBenchmark(defaultRunConfig(), &harness.runner.targetURL, interactions)
+	if err != nil {
+		t.Fatalf("create PACT execution plan: %v", err)
 	}
-	harness.runner.interactions = interactions
+	harness.runner.benchmark = execution
+	harness.runner.executionStartedAt = time.Now()
 
 	runs := len(interactions) + 1
 	for range runs {
@@ -346,8 +144,8 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 
 	directory := t.TempDir()
 	config := defaultRunConfig()
-	config.targetURL = server.URL
-	config.pactDirectory = filepath.Join("testdata", "pacts")
+	config.pactProviderURL = server.URL
+	config.pactDirectory = pactFixtureDirectory()
 	config.virtualUsers = 1
 	config.iterations = 45
 	config.minIterationDuration = 100 * time.Millisecond
@@ -355,6 +153,9 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 	config.maxDuration = 10 * time.Second
 	config.jsonFilename = filepath.Join(directory, "metrics.json")
 	config.htmlFilename = filepath.Join(directory, "report.html")
+	config.dashboardFilename = filepath.Join(directory, "dashboard.html")
+	config.combinedFilename = filepath.Join(directory, "combined.html")
+	config.benchmarkManifestFilename = filepath.Join(directory, "benchmark-manifest.json")
 	var stdout, stderr bytes.Buffer
 	if err := run(t.Context(), config, &stdout, &stderr); err != nil {
 		t.Fatalf("run Pact workload: %v\n%s", err, stderr.String())
@@ -389,7 +190,7 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 	if count := strings.Count(stdout.String(), "provider_state:httpbin supports teapot responses"); count != 4 {
 		t.Errorf("console output contains %d provider-state metric rows, expected four:\n%s", count, stdout.String())
 	}
-	for _, filename := range []string{config.jsonFilename, config.htmlFilename} {
+	for _, filename := range []string{config.jsonFilename, config.htmlFilename, config.dashboardFilename, config.combinedFilename, config.benchmarkManifestFilename} {
 		info, err := os.Stat(filename)
 		if err != nil {
 			t.Errorf("stat output %s: %v", filename, err)
@@ -398,11 +199,106 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 		}
 	}
 	assertIntentionalPactFailureInMetrics(t, config.jsonFilename, 5)
+	interactions, err := loadPactDirectory(config.pactDirectory)
+	if err != nil {
+		t.Fatalf("load expected Pact interactions: %v", err)
+	}
+	targetURL, err := httpext.NewURL(config.pactProviderURL, config.pactProviderURL)
+	if err != nil {
+		t.Fatalf("create expected Pact target URL: %v", err)
+	}
+	expectedExecution, err := synthesizeBenchmark(config, &targetURL, interactions)
+	if err != nil {
+		t.Fatalf("create expected Pact execution plan: %v", err)
+	}
+	expectedPlan := expectedExecution.validated.Benchmark()
+	plan := assertBenchmarkManifestMatchesExecution(
+		t,
+		config.benchmarkManifestFilename,
+		expectedPlan,
+		server.URL,
+	)
+	if len(plan.Cases) != len(interactions) {
+		t.Fatalf("Pact execution plan case count = %d, want %d", len(plan.Cases), len(interactions))
+	}
+	for index, item := range plan.Cases {
+		if item.ID != expectedPlan.Cases[index].ID {
+			t.Errorf("Pact execution plan case %d ID = %q, want %q", index, item.ID, expectedPlan.Cases[index].ID)
+		}
+		if item.Source.Kind != "pact" || item.Source.Locator == "" || item.Source.Interaction == "" {
+			t.Errorf("Pact execution plan case %d has incomplete provenance: %#v", index, item.Source)
+		}
+		if len(item.Labels) == 0 || item.Check == nil || !item.Check.Enabled {
+			t.Errorf("Pact execution plan case %d is missing labels or an enabled check: %#v", index, item)
+		}
+	}
+	if len(plan.Thresholds) != 1 || plan.Thresholds[0].ID != "pact-responses-valid" || plan.Thresholds[0].Metric != "checks{"+pactResponseCheckSubmetric+"}" {
+		t.Fatalf("Pact execution plan thresholds = %#v", plan.Thresholds)
+	}
+	if !bytes.Contains(stdout.Bytes(), []byte("Benchmark manifest: "+config.benchmarkManifestFilename)) {
+		t.Fatalf("console output does not announce execution plan:\n%s", stdout.String())
+	}
 	report, err := os.ReadFile(config.htmlFilename)
 	if err != nil {
 		t.Fatalf("read Pact HTML report: %v", err)
 	}
 	assertIntentionalPactFailureInReport(t, report)
+	if err := validateGeneratedHTMLArtifact(config.dashboardFilename); err != nil {
+		t.Fatalf("validate Pact dashboard report: %v", err)
+	}
+	dashboardEvents := decodeDashboardReportEvents(t, mustReadFile(t, config.dashboardFilename))
+	metricNames := dashboardReportMetricNames(t, dashboardEvents)
+	failedRequestSeries := "http_req_failed{pact_interaction:" + intentionalPactMismatchInteraction + "}"
+	if !dashboardReportContainsString(metricNames, failedRequestSeries) {
+		t.Fatalf("Pact dashboard report is missing failed request series %q: %v", failedRequestSeries, metricNames)
+	}
+	if !dashboardReportContainsString(metricNames, "checks{"+pactResponseCheckSubmetric+"}") {
+		t.Fatalf("Pact dashboard report is missing the Pact check submetric: %v", metricNames)
+	}
+	var failedThresholds map[string][]string
+	for _, event := range dashboardEvents {
+		if event.Name != "threshold" {
+			continue
+		}
+		if err := json.Unmarshal(event.Data, &failedThresholds); err != nil {
+			t.Fatalf("decode Pact dashboard threshold event: %v", err)
+		}
+	}
+	checkSeries := "checks{" + pactResponseCheckSubmetric + "}"
+	if got := failedThresholds[checkSeries]; len(got) != 1 || got[0] != pactResponsesValidThreshold {
+		t.Fatalf("Pact dashboard failed thresholds for %q = %v, want %q", checkSeries, got, pactResponsesValidThreshold)
+	}
+	if got := countDashboardReportEvents(dashboardEvents, "snapshot"); got < 2 {
+		t.Fatalf("Pact dashboard snapshots = %d, want multiple periodic snapshots", got)
+	}
+	combinedReport := mustReadFile(t, config.combinedFilename)
+	if err := validateGeneratedHTMLArtifact(config.combinedFilename); err != nil {
+		t.Fatalf("validate Pact combined report: %v", err)
+	}
+	for _, fragment := range []string{
+		intentionalPactMismatchInteraction,
+		pactResponsesValidThreshold,
+		"Failed",
+		DashboardReportOneTagDiagnosticCode,
+		"consumer_service",
+		"provider_service",
+		"pact_interaction",
+	} {
+		if !bytes.Contains(combinedReport, []byte(fragment)) {
+			t.Errorf("Pact combined report is missing %q", fragment)
+		}
+	}
+	dashboardPayload, err := combinedDashboardPayload(mustReadFile(t, config.dashboardFilename))
+	if err != nil {
+		t.Fatalf("read standalone dashboard payload: %v", err)
+	}
+	combinedPayload, err := combinedDashboardPayload(combinedReport)
+	if err != nil {
+		t.Fatalf("read combined dashboard payload: %v", err)
+	}
+	if !bytes.Equal(dashboardPayload, combinedPayload) {
+		t.Fatal("combined report changed the standalone dashboard event payload")
+	}
 }
 
 func assertIntentionalPactFailureInMetrics(t *testing.T, filename string, expectedFailures int) {
@@ -577,14 +473,16 @@ func newHTTPBinServer(t *testing.T) *httptest.Server {
 
 func TestNativeVUPactMismatchEmitsFailedCheck(t *testing.T) {
 	harness := newNativeVUTestHarness(t, "http://example.test/headers", 0)
-	interactions, err := loadPactDirectory(filepath.Join("testdata", "pacts"))
+	interactions, err := loadPactDirectory(pactFixtureDirectory())
 	if err != nil {
 		t.Fatalf("load PACT directory: %v", err)
 	}
-	if err := bindPactInteractionURLs(interactions, harness.runner.targetURL.GetURL()); err != nil {
-		t.Fatalf("bind PACT URLs: %v", err)
+	execution, err := synthesizeBenchmark(defaultRunConfig(), &harness.runner.targetURL, interactions[1:2])
+	if err != nil {
+		t.Fatalf("create PACT execution plan: %v", err)
 	}
-	harness.runner.interactions = interactions[1:2]
+	harness.runner.benchmark = execution
+	harness.runner.executionStartedAt = time.Now()
 	harness.vu.state.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return &http.Response{
 			Status:     "200 OK",

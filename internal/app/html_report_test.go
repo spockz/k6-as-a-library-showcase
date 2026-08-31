@@ -1,8 +1,9 @@
-package main
+package app
 
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -70,7 +71,7 @@ func TestSummaryOutputWritesK6ReporterHTML(t *testing.T) {
 	}})
 	output.SetTestRunDuration(2 * time.Second)
 
-	summary, err := output.k6SummaryData()
+	summary, err := output.Summary()
 	if err != nil {
 		t.Fatalf("build k6 summary data: %v", err)
 	}
@@ -152,7 +153,53 @@ func TestWriteK6ReporterHTMLSurfacesFileErrors(t *testing.T) {
 		},
 	}
 	filename := filepath.Join(t.TempDir(), "missing", "report.html")
-	if err := writeK6ReporterHTML(filename, summary, io.Discard); err == nil {
-		t.Fatal("expected an HTML report file error")
+	err := writeK6ReporterHTML(filename, summary, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "create temporary artifact") {
+		t.Fatalf("HTML report error = %v, want temporary artifact creation error", err)
 	}
+}
+
+func TestWriteK6ReporterHTMLPreservesExistingArtifactOnRenderFailure(t *testing.T) {
+	t.Parallel()
+
+	directory := t.TempDir()
+	filename := filepath.Join(directory, "report.html")
+	previous := "previous report"
+	if err := os.WriteFile(filename, []byte(previous), 0o600); err != nil {
+		t.Fatalf("write existing HTML report: %v", err)
+	}
+	renderErr := errors.New("render failed")
+	err := writeK6ReporterHTMLWithRenderer(
+		filename,
+		k6Summary{},
+		io.Discard,
+		func(k6Summary, io.Writer) (string, error) { return "", renderErr },
+	)
+	if !errors.Is(err, renderErr) {
+		t.Fatalf("HTML report error = %v, want %v", err, renderErr)
+	}
+	assertArtifactContents(t, filename, previous)
+	assertNoTemporaryArtifacts(t, directory, ".report.html.tmp-")
+}
+
+func TestWriteK6ReporterHTMLPreservesExistingArtifactOnValidationFailure(t *testing.T) {
+	t.Parallel()
+
+	directory := t.TempDir()
+	filename := filepath.Join(directory, "report.html")
+	previous := "previous report"
+	if err := os.WriteFile(filename, []byte(previous), 0o600); err != nil {
+		t.Fatalf("write existing HTML report: %v", err)
+	}
+	err := writeK6ReporterHTMLWithRenderer(
+		filename,
+		k6Summary{},
+		io.Discard,
+		func(k6Summary, io.Writer) (string, error) { return "not an HTML document", nil },
+	)
+	if err == nil || !strings.Contains(err.Error(), "validate temporary artifact") {
+		t.Fatalf("HTML report error = %v, want validation error", err)
+	}
+	assertArtifactContents(t, filename, previous)
+	assertNoTemporaryArtifacts(t, directory, ".report.html.tmp-")
 }
