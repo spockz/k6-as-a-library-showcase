@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "id": "example",
+  "baseline": {
+    "kind": "shared_iterations",
+    "vus": 1,
+    "iterations": 3
+  },
+  "cases": [
+    {
+      "id": "case-a",
+      "name": "case A",
+      "operation": {
+        "id": "operation-a",
+        "method": "GET",
+        "path": "/a"
+      },
+      "request": {
+        "method": "GET",
+        "path": "/a",
+        "query": [
+          {
+            "name": "a",
+            "value": "first"
+          },
+          {
+            "name": "a",
+            "value": "second"
+          },
+          {
+            "name": "z",
+            "value": "last"
+          }
+        ],
+        "headers": [
+          {
+            "name": "X-Trace",
+            "values": [
+              "one",
+              "two"
+            ]
+          }
+        ],
+        "body": {
+          "encoding": "text",
+          "content": ""
+        },
+        "redirects": "none"
+      },
+      "check": {
+        "id": "check-a",
+        "name": "response matches",
+        "enabled": true
+      },
+      "labels": [
+        {
+          "name": "consumer_service",
+          "value": "consumer"
+        }
+      ],
+      "source": {
+        "kind": "generated",
+        "locator": "example"
+      }
+    },
+    {
+      "id": "case-b",
+      "name": "case B",
+      "operation": {
+        "id": "operation-b",
+        "method": "POST",
+        "path": "/b"
+      },
+      "request": {
+        "method": "POST",
+        "path": "/b",
+        "redirects": "none"
+      },
+      "source": {
+        "kind": "generated",
+        "locator": "example"
+      }
+    }
+  ],
+  "segments": [
+    {
+      "id": "all",
+      "start": "0s",
+      "selection": {
+        "mode": "round_robin"
+      },
+      "checks": "inherit"
+    }
+  ],
+  "segmentPolicy": {
+    "gap": "reject"
+  },
+  "report": {
+    "seriesDimensions": [
+      "consumer_service",
+      "provider_service",
+      "endpoint",
+      "pact_interaction",
+      "provider_state",
+      "name"
+    ]
+  }
+}
