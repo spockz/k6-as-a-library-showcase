@@ -20,3 +20,6 @@ coverage.*
 # Generated benchmark artifacts
 /metrics.json
 /report.html
+/combined.html
+/dashboard.html
+/benchmark-manifest.json

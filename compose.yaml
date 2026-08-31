@@ -1,0 +1,189 @@
+# Define isolated services and named storage for the complete Podman-compatible E2E stack.
+# Mimir provides the local Prometheus-compatible metrics API while accepting OTLP natively.
+x-runner-build: &runner-build
+  context: .
+  dockerfile: Containerfile
+
+services:
+  provider:
+    image: ghcr.io/mccutchen/go-httpbin:2.25.0@sha256:20739736d4eb8dc1b998dff701f437b8bd62dcc46492bd0d861e89890ca36500
+    environment:
+      LOG_FORMAT: json
+      LOG_LEVEL: INFO
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "/bin/go-httpbin", "-version"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+    networks:
+      - telemetry
+
+  collector:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.158.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    environment:
+      E2E_TEST_ID: "${E2E_TEST_ID:-k6-e2e}"
+    expose:
+      - "4317"
+      - "4318"
+      - "8888"
+      - "13133"
+    volumes:
+      - ./deploy/collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - benchmark-output:/var/log/benchmark:ro
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otelcol-contrib/config.yaml"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - telemetry
+
+  mimir:
+    image: grafana/mimir:3.2.0
+    command:
+      - -target=all
+      - -config.file=/etc/mimir/mimir.yaml
+      - -distributor.otel-metric-suffixes-enabled=true
+      - -distributor.otel-promote-resource-attributes=testid
+      - -distributor.otel-translation-strategy=UnderscoreEscapingWithSuffixes
+    expose:
+      - "9009"
+    volumes:
+      - ./deploy/mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      - mimir-data:/tmp/mimir
+    healthcheck:
+      test: ["CMD", "/bin/mimir", "-version"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    networks:
+      - telemetry
+
+  tempo:
+    image: grafana/tempo:3.0.2
+    command:
+      - -target=all
+      - -config.file=/etc/tempo/tempo.yaml
+    expose:
+      - "3200"
+      - "4317"
+      - "4318"
+    volumes:
+      - ./deploy/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    healthcheck:
+      test: ["CMD", "/tempo", "-version"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - telemetry
+
+  loki:
+    image: grafana/loki:3.7.4
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    expose:
+      - "3100"
+    volumes:
+      - ./deploy/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    healthcheck:
+      test: ["CMD", "/usr/bin/loki", "-version"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    networks:
+      - telemetry
+
+  grafana:
+    image: grafana/grafana:13.1.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+    ports:
+      - "127.0.0.1:${GRAFANA_HOST_PORT:-3000}:3000"
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./testdata/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    healthcheck:
+      test: ["CMD-SHELL", "wget --spider --quiet http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      - telemetry
+
+  benchmark:
+    build: *runner-build
+    command: ["/workspace/scripts/e2e/benchmark.sh"]
+    environment:
+      E2E_PROVIDER_URL: http://provider:8080
+      E2E_TEST_ID: "${E2E_TEST_ID:-k6-e2e}"
+      E2E_ITERATIONS: "${E2E_ITERATIONS:-45}"
+      E2E_VUS: "${E2E_VUS:-1}"
+      E2E_MIN_ITERATION_DURATION: "${E2E_MIN_ITERATION_DURATION:-25ms}"
+      E2E_REQUEST_TIMEOUT: "${E2E_REQUEST_TIMEOUT:-5s}"
+      E2E_MAX_DURATION: "${E2E_MAX_DURATION:-30s}"
+      E2E_READINESS_TIMEOUT_SECONDS: "${E2E_READINESS_TIMEOUT_SECONDS:-60}"
+      K6_OTEL_SERVICE_NAME: k6-as-a-library
+      K6_OTEL_SERVICE_VERSION: 1.8.1
+      K6_OTEL_METRIC_PREFIX: k6_
+      K6_OTEL_FLUSH_INTERVAL: 1s
+      K6_OTEL_EXPORT_INTERVAL: 1s
+      K6_OTEL_EXPORTER_PROTOCOL: http/protobuf
+      K6_OTEL_SINGLE_COUNTER_FOR_RATE: "true"
+      K6_OTEL_HTTP_EXPORTER_ENDPOINT: collector:4318
+      K6_OTEL_HTTP_EXPORTER_URL_PATH: /v1/metrics
+      K6_OTEL_HTTP_EXPORTER_INSECURE: "true"
+      K6_TRACES_OUTPUT: otel=http://collector:4318,proto=http
+      OTEL_SERVICE_NAME: k6-as-a-library
+      OTEL_RESOURCE_ATTRIBUTES: "service.version=1.8.1,testid=${E2E_TEST_ID:-k6-e2e}"
+    volumes:
+      - .:/workspace:ro
+      - benchmark-output:/out
+      - benchmark-cache:/var/cache
+    networks:
+      - telemetry
+
+  assertion:
+    build: *runner-build
+    command: ["/workspace/scripts/e2e/assert-stack.sh"]
+    environment:
+      E2E_TEST_ID: "${E2E_TEST_ID:-k6-e2e}"
+      E2E_EXPECTED_ITERATIONS: "${E2E_EXPECTED_ITERATIONS:-45}"
+      E2E_READINESS_TIMEOUT_SECONDS: "${E2E_READINESS_TIMEOUT_SECONDS:-60}"
+      E2E_QUERY_TIMEOUT_SECONDS: "${E2E_QUERY_TIMEOUT_SECONDS:-30}"
+      E2E_SETTLE_SECONDS: "${E2E_SETTLE_SECONDS:-5}"
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - .:/workspace:ro
+      - benchmark-output:/out:ro
+      - benchmark-cache:/var/cache
+    networks:
+      - telemetry
+
+networks:
+  telemetry:
+
+volumes:
+  benchmark-output:
+  benchmark-cache:
+  mimir-data:
+  tempo-data:
+  loki-data:
+  grafana-data:

@@ -1,0 +1,36 @@
+# Give Grafana stable in-network links to Mimir's Prometheus-compatible API and the other telemetry stores.
+apiVersion: 1
+
+datasources:
+  - name: Mimir
+    uid: mimir
+    type: prometheus
+    access: proxy
+    url: http://mimir:9009/prometheus
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: GET
+  - name: tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      httpMethod: GET
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: -5m
+        spanEndTimeShift: 5m
+        tags:
+          - service.name
+          - testid
+      tracesToMetrics:
+        datasourceUid: mimir
+  - name: loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false

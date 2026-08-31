@@ -1,0 +1,14 @@
+# Keep dashboard loading filesystem-based so pinned assets resolve to Mimir without network access.
+apiVersion: 1
+
+providers:
+  - name: k6-e2e
+    orgId: 1
+    folder: k6 E2E
+    type: file
+    disableDeletion: false
+    editable: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

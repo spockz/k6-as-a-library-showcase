@@ -1,0 +1,12 @@
+# Keep host-only metadata and prior reports out of the portable runner image.
+.git
+.agents
+.codex
+.containerignore
+/metrics.json
+/report.html
+/combined.html
+/dashboard.html
+/benchmark-manifest.json
+/k6-as-a-library
+/out

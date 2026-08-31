@@ -1,0 +1,110 @@
+# Centralize OTLP ingress and route benchmark signals to the portable local backends.
+# Metrics go directly to Mimir's native OTLP endpoint so no scrape or remote-write bridge is needed.
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  file_log/benchmark:
+    include:
+      - /var/log/benchmark/benchmark.log
+    start_at: beginning
+    on_truncate: read_whole_file
+    poll_interval: 200ms
+    include_file_name: false
+    include_file_path: false
+    resource:
+      service.name: k6-as-a-library
+      service.version: 1.8.1
+      testid: ${env:E2E_TEST_ID}
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+    spike_limit_mib: 64
+  resource/e2e:
+    attributes:
+      - key: service.name
+        value: k6-as-a-library
+        action: upsert
+      - key: service.version
+        value: 1.8.1
+        action: upsert
+      - key: testid
+        value: ${env:E2E_TEST_ID}
+        action: upsert
+  batch:
+    send_batch_size: 128
+    timeout: 1s
+
+exporters:
+  otlp_http/mimir:
+    endpoint: http://mimir:9009/otlp
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 5s
+      max_elapsed_time: 30s
+    sending_queue:
+      enabled: true
+      num_consumers: 2
+      queue_size: 256
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 5s
+      max_elapsed_time: 30s
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 5s
+      max_elapsed_time: 30s
+
+service:
+  extensions:
+    - health_check
+  telemetry:
+    metrics:
+      level: detailed
+  pipelines:
+    metrics:
+      receivers:
+        - otlp
+      processors:
+        - memory_limiter
+        - resource/e2e
+        - batch
+      exporters:
+        - otlp_http/mimir
+    traces:
+      receivers:
+        - otlp
+      processors:
+        - memory_limiter
+        - resource/e2e
+        - batch
+      exporters:
+        - otlp_grpc/tempo
+    logs:
+      receivers:
+        - otlp
+        - file_log/benchmark
+      processors:
+        - memory_limiter
+        - resource/e2e
+        - batch
+      exporters:
+        - otlp_http/loki
