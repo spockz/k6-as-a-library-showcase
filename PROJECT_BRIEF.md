@@ -32,6 +32,9 @@ using k6 shared iterations. It provides:
 - a sectioned k6-style terminal report covering every observed metric and Pact
   tag submetric
 - a final table-oriented k6-reporter HTML summary generated in process
+- an optional self-contained interactive dashboard HTML report generated from the same final metric stream
+- an optional combined HTML report that uses k6-reporter as its visual base, embeds the unchanged interactive dashboard in an isolated graph region, and retains exhaustive local tables
+- an optional deterministic benchmark manifest generated from the validated direct or Pact `SynthesizedBenchmark`
 - a `rate==1` threshold on Pact response checks requiring every response to
   match its contract
 - an optional live dashboard
@@ -83,7 +86,12 @@ the k6 CLI or JavaScript runtime.
 - Render the final report with the vendored k6-reporter v3.0.4 CommonJS bundle
   in k6's Goja-derived Sobek runtime.
 - Keep the live dashboard disabled by default.
-- Validate generated JSON and HTML artifacts.
+- Validate generated benchmark manifest, JSON, and HTML artifacts.
+- Publish JSON and standalone HTML artifacts atomically after structural validation, preserving existing destinations when generation or validation fails.
+- Publish the combined report atomically from finalized existing summary and dashboard state without adding another sample aggregator.
+- Keep the combined artifact self-contained by removing the reporter template's external resource links, and isolate dashboard CSS and JavaScript from the reporter document.
+- Synthesize direct and Pact inputs into a versioned, target-independent `SynthesizedBenchmark` before execution; keep bound target URLs and k6 runtime objects out of the serialized model.
+- When `--benchmark-manifest-output` is set, serialize the exact validated benchmark as a deterministic `BenchmarkManifest` with a trailing newline, validate it by round-trip decoding, and publish it atomically from a temporary file.
 - Surface output and artifact errors rather than silently ignoring them.
 
 ## Remaining differences from the k6 binary
@@ -142,6 +150,7 @@ the k6 CLI or JavaScript runtime.
   content.
 - Cover terminal metric categories, typed values, thresholds, checks, groups,
   ANSI colors, and Pact-tagged submetrics.
+- Cover direct and Pact benchmark manifests, deterministic encoding, round-trip validation, target independence, default-disabled and explicit-empty behavior, output-path collisions, and preservation of existing destinations after failed publication.
 - Keep JSON schema compatibility checks against the pinned k6 source.
 - Run gofmt, gopls diagnostics, go vet, the full test suite, and the race
   detector after Go changes.
