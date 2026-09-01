@@ -391,8 +391,7 @@ func newNativeVUTestHarness(
 		BuiltinMetrics: builtin,
 		TestStatus:     lib.NewTestStatus(),
 		RunTags:        registry.RootTagSet(),
-		TargetURL:      targetURL,
-		ExactTarget:    true,
+		TargetURL:      executionBaseURL(t, targetURL),
 		RequestTimeout: time.Second,
 		Benchmark:      validated,
 		TraceProvider:  traceProvider,
@@ -414,6 +413,20 @@ func newNativeVUTestHarness(
 		out:    out,
 		cancel: active.cancel,
 	}
+}
+
+func executionBaseURL(t *testing.T, target httpext.URL) httpext.URL {
+	t.Helper()
+	parsed := *target.GetURL()
+	parsed.Path = ""
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	base, err := httpext.NewURL(parsed.String(), "execution base")
+	if err != nil {
+		t.Fatalf("create execution base URL: %v", err)
+	}
+	return base
 }
 
 func directTestBenchmark(target *url.URL) (ValidatedBenchmark, error) {
@@ -530,7 +543,6 @@ func TestNativeVUPactInteractionsUseRequestsTagsAndChecks(t *testing.T) {
 		t.Fatalf("create PACT execution plan: %v", err)
 	}
 	harness.runner.benchmark = execution
-	harness.runner.exactTarget = false
 	harness.runner.executionStartedAt = time.Now()
 
 	runs := len(interactions) + 1
@@ -634,7 +646,6 @@ func TestNativeVUPactMismatchEmitsFailedCheck(t *testing.T) {
 		t.Fatalf("create PACT execution plan: %v", err)
 	}
 	harness.runner.benchmark = execution
-	harness.runner.exactTarget = false
 	harness.runner.executionStartedAt = time.Now()
 	harness.vu.state.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		return &http.Response{

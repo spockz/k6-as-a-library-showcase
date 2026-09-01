@@ -25,7 +25,6 @@ import (
 type EngineConfig struct {
 	Logger         *logrus.Logger
 	TargetURL      string
-	ExactTarget    bool
 	RequestTimeout time.Duration
 	Benchmark      ValidatedBenchmark
 	Samples        chan<- metrics.SampleContainer
@@ -117,7 +116,6 @@ func NewEngine(ctx context.Context, config EngineConfig) (*Engine, error) {
 		TestStatus:     testStatus,
 		RunTags:        runTags,
 		TargetURL:      targetURL,
-		ExactTarget:    config.ExactTarget,
 		RequestTimeout: config.RequestTimeout,
 		Benchmark:      config.Benchmark,
 		TraceProvider:  config.TraceProvider,

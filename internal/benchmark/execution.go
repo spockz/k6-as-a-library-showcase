@@ -92,7 +92,6 @@ type RunnerConfig struct {
 	TestStatus     *lib.TestStatus
 	RunTags        *metrics.TagSet
 	TargetURL      httpext.URL
-	ExactTarget    bool
 	RequestTimeout time.Duration
 	Benchmark      ValidatedBenchmark
 	TraceProvider  *k6oteltrace.Provider
@@ -125,7 +124,6 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 		testStatus:         config.TestStatus,
 		runTags:            config.RunTags,
 		targetURL:          config.TargetURL,
-		exactTarget:        config.ExactTarget,
 		requestTimeout:     config.RequestTimeout,
 		benchmark:          execution,
 		executionStartedAt: time.Now(),
@@ -144,7 +142,6 @@ type Runner struct {
 	testStatus         *lib.TestStatus
 	runTags            *metrics.TagSet
 	targetURL          httpext.URL
-	exactTarget        bool
 	requestTimeout     time.Duration
 	benchmark          Execution
 	executionStartedAt time.Time
@@ -381,8 +378,8 @@ func (vu *activeNativeVU) RunOnce() error {
 	return vu.finishIteration(iterationStarted, iterationEnded, requestErr)
 }
 
-func PrepareRequest(targetURL httpext.URL, exactTarget bool, item dsl.Case) (PreparedRequest, error) {
-	runner := Runner{targetURL: targetURL, exactTarget: exactTarget}
+func PrepareRequest(targetURL httpext.URL, item dsl.Case) (PreparedRequest, error) {
+	runner := Runner{targetURL: targetURL}
 	return runner.prepareCaseRequest(item)
 }
 
@@ -423,10 +420,6 @@ func (r *Runner) caseRequestURL(item dsl.Case) (*url.URL, error) {
 	base := r.targetURL.GetURL()
 	if base == nil {
 		return nil, errors.New("target URL is nil")
-	}
-	if r.exactTarget {
-		copy := *base
-		return &copy, nil
 	}
 	pathURL, err := url.Parse(item.Request.Path)
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -123,7 +124,7 @@ func TestExecutionPlanRequestAdapterPreservesPactRequest(t *testing.T) {
 	if post.ID == "" {
 		t.Fatal("POST Pact case was not mapped")
 	}
-	prepared, err := benchmarkpkg.PrepareRequest(target, false, post)
+	prepared, err := benchmarkpkg.PrepareRequest(target, post)
 	if err != nil {
 		t.Fatalf("prepare plan request: %v", err)
 	}
@@ -156,7 +157,11 @@ func TestExecutionPlanRequestAdapterPreservesDirectRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create direct plan: %v", err)
 	}
-	prepared, err := benchmarkpkg.PrepareRequest(target, true, execution.Benchmark().Cases[0])
+	base, err := httpext.NewURL("http://provider.example", "direct base")
+	if err != nil {
+		t.Fatalf("create direct base URL: %v", err)
+	}
+	prepared, err := benchmarkpkg.PrepareRequest(base, execution.Benchmark().Cases[0])
 	if err != nil {
 		t.Fatalf("prepare direct request: %v", err)
 	}
@@ -165,6 +170,28 @@ func TestExecutionPlanRequestAdapterPreservesDirectRequest(t *testing.T) {
 	}
 	if got := prepared.Request.URL.String(); got != "http://provider.example/headers?source=direct" {
 		t.Fatalf("request URL = %q", got)
+	}
+}
+
+func TestDirectExecutionTargetContainsOnlyServerBase(t *testing.T) {
+	t.Parallel()
+
+	config := defaultRunConfig()
+	config.targetURL = "http://provider.example/headers?source=direct"
+	if got := config.executionTargetURL(); got != "http://provider.example" {
+		t.Fatalf("direct execution target = %q, want server base", got)
+	}
+	target, err := url.Parse(config.targetURL)
+	if err != nil {
+		t.Fatalf("parse direct target: %v", err)
+	}
+	execution, err := synthesizeBenchmark(config, target, nil)
+	if err != nil {
+		t.Fatalf("synthesize direct benchmark: %v", err)
+	}
+	request := execution.Benchmark().Cases[0].Request
+	if request.Path != "/headers" || len(request.Query) != 1 || request.Query[0].Name != "source" || request.Query[0].Value != "direct" {
+		t.Fatalf("ephemeral DSL request = %#v", request)
 	}
 }
 
@@ -197,7 +224,7 @@ func TestPactRequestUsesConfiguredProviderDespiteHostHeader(t *testing.T) {
 		},
 		Source: dsl.Provenance{Kind: "pact"},
 	}
-	prepared, err := benchmarkpkg.PrepareRequest(target, false, item)
+	prepared, err := benchmarkpkg.PrepareRequest(target, item)
 	if err != nil {
 		t.Fatalf("prepare Pact request: %v", err)
 	}

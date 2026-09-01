@@ -81,7 +81,6 @@ func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T)
 		t.Fatalf("create mixed tracing execution: %v", err)
 	}
 	harness.runner.benchmark = execution
-	harness.runner.exactTarget = false
 	harness.runner.executionStartedAt = time.Now()
 	if err := harness.vu.RunOnce(); err != nil {
 		t.Fatalf("run passing expected-418 interaction: %v", err)

@@ -209,7 +209,16 @@ func (config runConfig) executionTargetURL() string {
 	if config.pactDirectory != "" {
 		return config.pactProviderURL
 	}
-	return config.targetURL
+	target, err := url.Parse(config.targetURL)
+	if err != nil {
+		return config.targetURL
+	}
+	target.Path = ""
+	target.RawPath = ""
+	target.RawQuery = ""
+	target.ForceQuery = false
+	target.Fragment = ""
+	return target.String()
 }
 
 func validateArtifactOutputPaths(paths ...string) error {
@@ -250,8 +259,11 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) (runEr
 	logger := logrus.New()
 	logger.SetOutput(stderr)
 	out := make(chan metrics.SampleContainer, 128)
-	executionTarget := config.executionTargetURL()
-	targetURL, err := url.Parse(executionTarget)
+	synthesisTarget := config.targetURL
+	if config.pactDirectory != "" {
+		synthesisTarget = config.pactProviderURL
+	}
+	targetURL, err := url.Parse(synthesisTarget)
 	if err != nil {
 		return fmt.Errorf("parse benchmark target URL: %w", err)
 	}
@@ -287,10 +299,10 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) (runEr
 		runErr = errors.Join(runErr, benchmarkpkg.FinalizeTraceProvider(traceProvider, benchmarkSpan))
 	}()
 
+	executionTarget := config.executionTargetURL()
 	engine, err := benchmarkpkg.NewEngine(ctx, benchmarkpkg.EngineConfig{
 		Logger:         logger,
 		TargetURL:      executionTarget,
-		ExactTarget:    len(interactions) == 0,
 		RequestTimeout: config.requestTimeout,
 		Benchmark:      execution,
 		Samples:        out,
