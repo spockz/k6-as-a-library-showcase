@@ -101,8 +101,11 @@ func combinedTableValuesFromSummary(metric SummaryMetric) []combinedTableValue {
 }
 
 func combinedTableGroupFromSummary(group SummaryGroup) combinedTableGroup {
-	result := combinedTableGroup{Name: group.Name, Path: group.Path}
-	result.Checks = make([]combinedTableCheck, len(group.Checks))
+	result := combinedTableGroup{
+		Name:   group.Name,
+		Path:   group.Path,
+		Checks: make([]combinedTableCheck, len(group.Checks)),
+	}
 	for index, check := range group.Checks {
 		total := check.Passes + check.Fails
 		status := combinedTableNotEvaluated

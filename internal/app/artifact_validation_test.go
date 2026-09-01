@@ -30,15 +30,17 @@ func TestValidateK6JSONArtifactAcceptsGeneratedMultilineOutput(t *testing.T) {
 	metric := registry.MustNewMetric(metrics.HTTPReqsName, metrics.Counter, metrics.Default)
 	tags := registry.RootTagSet().With("empty", "")
 	firstSample := metrics.Sample{
-		TimeSeries: metrics.TimeSeries{Metric: metric, Tags: tags},
-		Time:       time.Time{},
-		Value:      1,
+		Metric:   metric,
+		Tags:     tags,
+		Time:     time.Time{},
+		Value:    1,
+		Metadata: map[string]string{"empty": ""},
 	}
-	firstSample.Metadata = map[string]string{"empty": ""}
 	secondSample := metrics.Sample{
-		TimeSeries: metrics.TimeSeries{Metric: metric, Tags: tags},
-		Time:       time.Time{},
-		Value:      1,
+		Metric: metric,
+		Tags:   tags,
+		Time:   time.Time{},
+		Value:  1,
 	}
 	output := k6output.NewJSON(filename)
 	if err := output.Start(); err != nil {
@@ -90,9 +92,10 @@ func TestJSONOutputPreservesExistingArtifactOnPublicationFailure(t *testing.T) {
 				registry := metrics.NewRegistry()
 				metric := registry.MustNewMetric(metrics.HTTPReqsName, metrics.Counter, metrics.Default)
 				output.AddMetricSamples([]metrics.SampleContainer{metrics.ConnectedSamples{Samples: []metrics.Sample{{
-					TimeSeries: metrics.TimeSeries{Metric: metric, Tags: registry.RootTagSet()},
-					Time:       time.Time{},
-					Value:      math.Inf(1),
+					Metric: metric,
+					Tags:   registry.RootTagSet(),
+					Time:   time.Time{},
+					Value:  math.Inf(1),
 				}}}})
 			}
 

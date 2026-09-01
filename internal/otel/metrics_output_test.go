@@ -177,11 +177,11 @@ func TestOTELMetricsOutputMapsSamplesAndResource(t *testing.T) {
 		t.Fatalf("start OpenTelemetry output: %v", err)
 	}
 	output.AddMetricSamples([]k6metrics.SampleContainer{k6metrics.Samples{
-		{TimeSeries: k6metrics.TimeSeries{Metric: counter, Tags: tags}, Value: 2.5},
-		{TimeSeries: k6metrics.TimeSeries{Metric: gauge, Tags: tags}, Value: 1024},
-		{TimeSeries: k6metrics.TimeSeries{Metric: trend, Tags: tags}, Value: 12.5},
-		{TimeSeries: k6metrics.TimeSeries{Metric: rate, Tags: tags}, Value: 1},
-		{TimeSeries: k6metrics.TimeSeries{Metric: rate, Tags: tags}, Value: 0},
+		{Metric: counter, Tags: tags, Value: 2.5},
+		{Metric: gauge, Tags: tags, Value: 1024},
+		{Metric: trend, Tags: tags, Value: 12.5},
+		{Metric: rate, Tags: tags, Value: 1},
+		{Metric: rate, Tags: tags, Value: 0},
 	}})
 	if err := output.Stop(); err != nil {
 		t.Fatalf("stop OpenTelemetry output: %v", err)

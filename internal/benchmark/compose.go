@@ -19,8 +19,9 @@ func Compose(inputs ...dsl.SynthesizedBenchmark) (ValidatedBenchmark, error) {
 func ComposeWithOptions(options ComposeOptions, inputs ...dsl.SynthesizedBenchmark) (ValidatedBenchmark, error) {
 	if len(inputs) == 0 {
 		return ValidatedBenchmark{}, &dsl.ValidationError{
-			Diagnostic: dsl.Diagnostic{Kind: dsl.ErrorInvalid, Field: "benchmarks"},
-			Message:    "at least one benchmark is required",
+			Kind:    dsl.ErrorInvalid,
+			Field:   "benchmarks",
+			Message: "at least one benchmark is required",
 		}
 	}
 	policy, err := options.policy()

@@ -2,13 +2,14 @@
 package planning
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"slices"
-	"sort"
+	"strings"
 	"time"
 
 	"k6-as-a-library/internal/dsl"
@@ -80,13 +81,13 @@ func MaximumStress(requirements []dsl.LoadEnvelope, options Options) (dsl.LoadPl
 			plan.Phases = append(plan.Phases, phase)
 		}
 	}
-	sort.SliceStable(plan.Phases, func(i, j int) bool {
-		left, _ := plan.Phases[i].Start.Parse()
-		right, _ := plan.Phases[j].Start.Parse()
-		if left != right {
-			return left < right
+	slices.SortStableFunc(plan.Phases, func(left, right dsl.LoadPhase) int {
+		leftStart, _ := left.Start.Parse()
+		rightStart, _ := right.Start.Parse()
+		if order := cmp.Compare(leftStart, rightStart); order != 0 {
+			return order
 		}
-		return plan.Phases[i].ID < plan.Phases[j].ID
+		return strings.Compare(left.ID, right.ID)
 	})
 	for index := range plan.Phases {
 		plan.Phases[index].ID = fmt.Sprintf("load-%06d", index+1)
@@ -253,11 +254,17 @@ func peakVUs(phases []dsl.LoadPhase, iterationDuration time.Duration) int64 {
 		at, _ := phase.Start.Parse()
 		events = append(events, event{at: at, delta: phase.Load.VUs}, event{at: at + iterationDuration, delta: -phase.Load.VUs, end: true})
 	}
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].at != events[j].at {
-			return events[i].at < events[j].at
+	slices.SortFunc(events, func(left, right event) int {
+		if order := cmp.Compare(left.at, right.at); order != 0 {
+			return order
 		}
-		return events[i].end && !events[j].end
+		if left.end == right.end {
+			return 0
+		}
+		if left.end {
+			return -1
+		}
+		return 1
 	})
 	var current, peak int64
 	for _, item := range events {

@@ -32,14 +32,16 @@ func TestSummaryOutputStopPreservesAggregationErrors(t *testing.T) {
 		Samples: []metrics.Sample{
 			{},
 			{
-				TimeSeries: metrics.TimeSeries{Metric: firstMetric, Tags: firstRegistry.RootTagSet()},
-				Time:       time.Time{},
-				Value:      1,
+				Metric: firstMetric,
+				Tags:   firstRegistry.RootTagSet(),
+				Time:   time.Time{},
+				Value:  1,
 			},
 			{
-				TimeSeries: metrics.TimeSeries{Metric: secondMetric, Tags: secondRegistry.RootTagSet()},
-				Time:       time.Time{},
-				Value:      1,
+				Metric: secondMetric,
+				Tags:   secondRegistry.RootTagSet(),
+				Time:   time.Time{},
+				Value:  1,
 			},
 		},
 	}})

@@ -180,9 +180,7 @@ func (engine *Engine) Run(ctx context.Context) (RunResult, error) {
 	var wait sync.WaitGroup
 	errorsOut := make(chan error, len(engine.executors))
 	for _, item := range engine.executors {
-		wait.Add(1)
-		go func(item scheduledExecutor) {
-			defer wait.Done()
+		wait.Go(func() {
 			timer := time.NewTimer(item.start)
 			defer timer.Stop()
 			select {
@@ -194,7 +192,7 @@ func (engine *Engine) Run(ctx context.Context) (RunResult, error) {
 				errorsOut <- err
 				cancel()
 			}
-		}(item)
+		})
 	}
 	wait.Wait()
 	close(errorsOut)

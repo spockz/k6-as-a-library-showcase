@@ -51,8 +51,7 @@ func TestSegmentGapRequiresExplicitDefaultPolicy(t *testing.T) {
 	model := basePlan()
 	model.Segments = []dsl.Segment{{ID: "window", Start: "1s", End: new(dsl.Duration("2s"))}}
 	err := planpkg.ValidateModel(model)
-	var segmentErr *planpkg.SegmentError
-	if err == nil || !errors.As(err, &segmentErr) {
+	if _, ok := errors.AsType[*planpkg.SegmentError](err); err == nil || !ok {
 		t.Fatalf("expected typed segment-gap error, got %T: %v", err, err)
 	}
 	if !strings.Contains(err.Error(), `plan "example"`) || !strings.Contains(err.Error(), "default segment") {
@@ -187,8 +186,7 @@ func TestValidationChecksReferencesCardinalityAndCapabilities(t *testing.T) {
 		Selection: dsl.SelectionSpec{Mode: dsl.SelectionRoundRobin, Cases: []dsl.CaseWeight{{CaseID: "missing", Weight: 1}}},
 	}}
 	err := planpkg.ValidateModel(unknown)
-	var referenceErr *planpkg.ReferenceError
-	if err == nil || !errors.As(err, &referenceErr) || !strings.Contains(err.Error(), `reference "missing"`) {
+	if _, ok := errors.AsType[*planpkg.ReferenceError](err); err == nil || !ok || !strings.Contains(err.Error(), `reference "missing"`) {
 		t.Fatalf("expected unknown-reference error, got %T: %v", err, err)
 	}
 
@@ -198,8 +196,7 @@ func TestValidationChecksReferencesCardinalityAndCapabilities(t *testing.T) {
 		MaxSeriesCardinality: 1,
 	}
 	err = planpkg.ValidateModel(cardinality)
-	var cardinalityErr *planpkg.CardinalityError
-	if err == nil || !errors.As(err, &cardinalityErr) {
+	if _, ok := errors.AsType[*planpkg.CardinalityError](err); err == nil || !ok {
 		t.Fatalf("expected cardinality error, got %T: %v", err, err)
 	}
 	if !strings.Contains(err.Error(), "cardinality 2") {
@@ -209,8 +206,7 @@ func TestValidationChecksReferencesCardinalityAndCapabilities(t *testing.T) {
 	arrival := basePlan()
 	arrival.LoadPlan.Phases[0].Load = dsl.PlannedLoad{Kind: dsl.PlannedLoadConstantArrival, Amount: 2, TimeUnit: "1s", PreAllocatedVUs: 1, MaxVUs: 1}
 	err = planpkg.Validate(arrival)
-	var capabilityErr *planpkg.CapabilityError
-	if err == nil || !errors.As(err, &capabilityErr) || !strings.Contains(err.Error(), "constant-arrival load") {
+	if _, ok := errors.AsType[*planpkg.CapabilityError](err); err == nil || !ok || !strings.Contains(err.Error(), "constant-arrival load") {
 		t.Fatalf("expected arrival-rate capability error, got %T: %v", err, err)
 	}
 
@@ -249,8 +245,7 @@ func TestCardinalityCountsOnlyReachableDefaultSegment(t *testing.T) {
 		MaxSeriesCardinality: 1,
 	}
 	err := planpkg.ValidateModel(segmented)
-	var cardinalityErr *planpkg.CardinalityError
-	if err == nil || !errors.As(err, &cardinalityErr) || !strings.Contains(err.Error(), "cardinality 2") {
+	if _, ok := errors.AsType[*planpkg.CardinalityError](err); err == nil || !ok || !strings.Contains(err.Error(), "cardinality 2") {
 		t.Fatalf("segment attributes were not counted as report groups: %T: %v", err, err)
 	}
 }
@@ -271,8 +266,7 @@ func TestComposeConflictPrecedenceIsExplicit(t *testing.T) {
 		Source: dsl.Provenance{Kind: "policy", Locator: "provider.yaml", Priority: 2},
 	}}
 	_, err := planpkg.Compose(left, right)
-	var conflictErr *planpkg.ConflictError
-	if err == nil || !errors.As(err, &conflictErr) {
+	if _, ok := errors.AsType[*planpkg.ConflictError](err); err == nil || !ok {
 		t.Fatalf("expected duplicate threshold conflict, got %T: %v", err, err)
 	}
 	if !strings.Contains(err.Error(), `threshold "latency"`) || !strings.Contains(err.Error(), "provider.yaml") {
@@ -317,8 +311,7 @@ func TestDefaultSegmentThresholdActivationConflictsAreRejected(t *testing.T) {
 		},
 	}
 	err := planpkg.ValidateModel(model)
-	var conflictErr *planpkg.ConflictError
-	if err == nil || !errors.As(err, &conflictErr) {
+	if _, ok := errors.AsType[*planpkg.ConflictError](err); err == nil || !ok {
 		t.Fatalf("expected default threshold conflict, got %T: %v", err, err)
 	}
 	if !strings.Contains(err.Error(), `segment "fallback"`) || !strings.Contains(err.Error(), `threshold "latency"`) {

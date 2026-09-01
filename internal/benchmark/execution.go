@@ -689,8 +689,9 @@ func newSampleWithMetadata(
 
 func NewSample(metric *metrics.Metric, tags *metrics.TagSet, at time.Time, value float64) metrics.Sample {
 	return metrics.Sample{
-		TimeSeries: metrics.TimeSeries{Metric: metric, Tags: tags},
-		Time:       at,
-		Value:      value,
+		Metric: metric,
+		Tags:   tags,
+		Time:   at,
+		Value:  value,
 	}
 }

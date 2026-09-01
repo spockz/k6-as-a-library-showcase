@@ -2,13 +2,14 @@
 package dsl
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math"
 	"math/big"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -68,8 +69,9 @@ var validOperators = map[string]bool{
 // checked by internal/benchmark.
 func Validate(p SynthesizedBenchmark) error {
 	normalized := p.Normalize()
-	collector := validationCollector{}
-	collector.planID = normalized.ID
+	collector := validationCollector{
+		planID: normalized.ID,
+	}
 
 	if normalized.SchemaVersion != CurrentSchemaVersion {
 		collector.add(Diagnostic{Field: "schemaVersion"}, "unsupported schema version %d", normalized.SchemaVersion)
@@ -776,11 +778,17 @@ func validateMaximumStressPlan(collector *validationCollector, plan LoadPlan, fa
 			events = append(events, loadEvent{start, phase.Load.VUs, false}, loadEvent{start + iterationDuration, -phase.Load.VUs, true})
 		}
 	}
-	sort.Slice(events, func(i, j int) bool {
-		if events[i].at != events[j].at {
-			return events[i].at < events[j].at
+	slices.SortFunc(events, func(left, right loadEvent) int {
+		if order := cmp.Compare(left.at, right.at); order != 0 {
+			return order
 		}
-		return events[i].ending && !events[j].ending
+		if left.ending == right.ending {
+			return 0
+		}
+		if left.ending {
+			return -1
+		}
+		return 1
 	})
 	var current, peak int64
 	for _, event := range events {

@@ -43,8 +43,9 @@ func TestManagedOutputRecordsEveryLifecycleError(t *testing.T) {
 	stopErr := errors.New("stop failed")
 	shutdownErr := errors.New("shutdown failed")
 	managed := NewManaged(&managedOutputTestWithShutdown{
-		managedOutputTestBase: managedOutputTestBase{startErr: startErr, stopErr: stopErr},
-		shutdownErr:           shutdownErr,
+		startErr:    startErr,
+		stopErr:     stopErr,
+		shutdownErr: shutdownErr,
 	})
 	if err := managed.Start(); !errors.Is(err, startErr) {
 		t.Fatalf("start error: expected %v, got %v", startErr, err)
