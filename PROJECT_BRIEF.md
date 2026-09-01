@@ -245,7 +245,10 @@ sequenceDiagram
 - Compile SLA rolling-window constraints into a deterministic maximum-stress schedule before execution.
 - Scale operation ceilings exactly with `--load-scaling-factor` while retaining their time windows.
 - Derive peak VUs from planned start overlap and the agreement's worst-case response duration.
+- Keep the p100 response-time assumption separate from the executor timeout so slower responses remain observable and can breach p100 checks.
 - Persist original requirements, effective constraints, assumptions, and executor-ready phases in schema-v3 manifests.
+- Preserve exact rolling failure ceilings alongside load constraints, distinguishing aggregate transport failures including returned HTTP 504 gateway timeouts, other HTTP 5xx responses, and functional failures with optional source-derived status codes.
+- Emit status-specific p100 objectives as k6 checks with `rate==1` and fail the run when a matching response exceeds its objective.
 - Reject plans that exceed configured operation or generator-VU safety bounds, and fail runs with unmet starts.
 
 ## Pact contract requirements
@@ -306,9 +309,13 @@ sequenceDiagram
 2. The JSON output is a local compatibility implementation. It buffers samples
    until shutdown instead of flushing every 200 milliseconds.
 3. General threshold configuration, periodic evaluation, abort behavior, taint
-   propagation, and threshold-based process status are not implemented. Pact
-   mode attaches `rate==1` to `checks{check:pact response matches}`; attached
-   thresholds are evaluated in the final local summary.
+   propagation, and non-check threshold-based process status are not
+   implemented. Unmet enabled response checks, agreement failure budgets, and
+   p100 objectives explicitly fail the run after outputs are finalized.
+   Pact mode attaches `rate==1` to `checks{check:pact response matches}`;
+   attached thresholds are evaluated in the final local summary. Agreement
+   failure budgets are evaluated against their exact rolling windows, exposed
+   as k6 checks with `rate==1`, and explicitly fail the run after a breach.
 4. The canonical k6 summary collector and `handleSummary(data)` construction
    are internal. The final report uses a local compatibility model and a pinned
    third-party renderer.
@@ -344,8 +351,8 @@ sequenceDiagram
 2. Preserve per-VU I/O samples when an iteration is canceled.
 3. Align fixed-request defaults, including the user agent and response-body
    policy.
-4. Add threshold configuration and evaluation based on generated SLA/SLO
-   inputs.
+4. Extend threshold configuration and evaluation beyond the implemented DSL
+   failure-budget checks to other generated SLA/SLO inputs.
 5. Replace shutdown-only JSON buffering with periodic streaming.
 6. Keep the terminal compatibility renderer aligned with the pinned k6 version
    until a public reporting API is available.

@@ -4,10 +4,15 @@ This project demonstrates how to run HTTP load-testing workloads directly throug
 
 The ultimate goal for this effort is to demonstrate how we could generate K6 benchmarks directly from golang based on alternative inputs than JS. The input is as follows:
 
-* OpenAPI Specs (for grouping of logical endpoints and to be able to show what has and hasn't been benchmarked.)
-* SLA / SLO specification from both the consumer and provider side stating required/expected response times, failure rates, and throughputs for load-generation, thresholds, checks, 
-* Specific requests per consumer based on the interactions on Consumer Contracts (i.e. PACT) to use as basis for the concrete requests.
-* A segments file containing a list of segments, used to tune the above input for specific time periods to allow for thresholds/checks to deactivate in certain periods, to change the load by a factor in a period.
+* **OpenAPI Specs**:
+  * for grouping of logical endpoints and;
+  * to be able to show what has and hasn't been benchmarked.
+* **SLA / SLO agreements records**:
+  from both the consumer and provider side stating required/expected response times, failure rates, and throughputs for load-generation, thresholds, checks,
+* **Automatic request synthesis**:
+  Specific requests per consumer based on the interactions on Consumer Contracts (i.e. PACT) to use as basis for the concrete requests.
+* **Declarative scenarios**:
+  A segments file containing a list of segments, each can be used to tune the above input for given time periods to allow for thresholds/checks to modify (deactivate, scale) in certain periods, and to change the load by a factor in a period.
 
 The goal is to reuse k6's execution engine, virtual-user model, built-in metrics, HTTP tracing, and output lifecycle while keeping benchmark configuration and the Cobra CLI separate from the workload implementation. A run produces k6-compatible JSON observations, a sectioned k6-style terminal report, a table-oriented HTML summary rendered directly with k6-reporter, optional standalone and combined interactive reports, an optional deterministic benchmark manifest, and an optional live streaming dashboard.
 
@@ -142,7 +147,7 @@ The labels below distinguish an inability to reuse k6's canonical implementation
 
 6. **Not internal: cancellation can suppress transferred-byte samples.** The native VU sends `netext.Dialer.IOSamples` through `metrics.PushIfNotDone` with the canceled VU context, so `data_sent` and `data_received` may be omitted for an interrupted iteration. k6 emits those I/O deltas before deciding whether the iteration completed. The required dialer samples and output channel are public, so this is a local lifecycle difference.
 
-7. **Internal-package limitation: the canonical threshold lifecycle is absent.** k6's threshold engine lives under `internal/metrics/engine`. Although metric and threshold definitions are exported, the engine that initializes tagged submetrics, evaluates thresholds periodically and at shutdown, aborts runs, and propagates taint cannot be reused. Pact mode attaches a fixed `rate==1` threshold to `checks{check:pact response matches}`, and the local summary evaluates and reports its final state. The CLI does not yet accept general threshold configuration, and no periodic evaluation, abort-on-failure behavior, or threshold-based process status is implemented.
+7. **Internal-package limitation: the canonical threshold lifecycle is absent.** k6's threshold engine lives under `internal/metrics/engine`. Although metric and threshold definitions are exported, the engine that initializes tagged submetrics, evaluates thresholds periodically and at shutdown, aborts runs, and propagates taint cannot be reused. Pact mode attaches a fixed `rate==1` threshold to `checks{check:pact response matches}`, and the local summary evaluates and reports its final state. An unmet Pact response check makes `run` return an error and the executable exit non-zero. DSL failure budgets and p100 objectives likewise emit k6 checks with `rate==1` and fail the run after a breach. The CLI does not yet accept general threshold configuration; generic periodic evaluation, abort-on-failure behavior, and non-check threshold process status are not implemented.
 
 8. **Internal-package limitation: the terminal report uses a local compatibility renderer.** The canonical collector, summary model, report adapter, and formatter live in `internal/output/summary`, `internal/lib/summary`, and `internal/js`, so this external Go module cannot import them. `internal/report/console.go` therefore follows the current k6 v1.8.1 `summary.js` presentation locally: `THRESHOLDS` and `TOTAL RESULTS` sections, protocol-oriented metric categories, globally aligned metric and tagged-submetric names, counter/rate/gauge/trend formatting, duration and byte units, checks and groups, Unicode status symbols, and TTY-gated ANSI colors. Pact tag combinations appear as k6-style submetric rows, including the deliberately failed check and request. This implementation consumes the same finalized model as the HTML renderer and should be removed if k6 exposes a public terminal reporter or this code moves inside the k6 module tree. Showing every observed metric instead of reproducing compact/full collection, and omitting scenario sections and the progress UI, are current project-scope choices rather than consequences of the `internal` rule.
 
@@ -178,10 +183,219 @@ For agreement-derived stress, replace `--vus`, `--iterations`, and
 window, schedules the maximum permitted operation starts, derives peak VUs
 from the agreement's worst-case response duration, and writes both the source
 requirements and executor-ready phases to the benchmark manifest.
+The response-time `p100` remains the concurrency-sizing assumption, while the
+configured request timeout is the executor limit so responses slower than the
+agreement can complete and fail their k6 checks instead of being canceled at
+the objective boundary.
 `--load-scaling-factor` scales only operation amounts: `1` uses the agreement,
 `10` requests ten times its load, and `0.1` requests ten percent while retaining
 the original windows. `--max-planned-operations` and `--generator-max-vus` are
 safety bounds.
+
+### Agreement examples
+
+The agreement loader accepts JSON as well as YAML. Each example below can be
+saved as `agreements.json` and passed with `--agreements agreements.json`. They
+use the default direct-request `/headers` endpoint and differ only in the load
+shape permitted by their intersecting rolling windows. The equivalent YAML
+files are available under [`examples/agreements`](examples/agreements).
+
+#### Approximately fixed load
+
+The 100 ms window permits only one operation start at a time, while the minute
+window caps the sustained rate at 600 starts. Both constraints represent ten
+starts per second, but the short window prevents those starts from being
+concentrated into a large burst.
+
+```json
+{
+  "agreements": [
+    {
+      "consumer": "fixed-load-client",
+      "provider": "example-api",
+      "slo": [
+        {
+          "endpoint": {
+            "host": "localhost",
+            "method": "GET",
+            "pathTemplate": "/headers"
+          },
+          "loadConstraints": [
+            {
+              "amount": 1,
+              "per-time-unit": "100ms"
+            },
+            {
+              "amount": 600,
+              "per-time-unit": "minute",
+              "permittedFailures": [
+                { "category": "transport", "amount": 5 },
+                { "category": "http_5xx", "amount": 3 },
+                {
+                  "category": "functional",
+                  "amount": 6,
+                  "statusCodes": ["400", "404", "409", "422"]
+                }
+              ]
+            }
+          ],
+          "responseTimes": [
+            {
+              "statusCode": 200,
+              "mean": "100ms",
+              "median": "90ms",
+              "p99": "200ms",
+              "p100": "250ms"
+            },
+            { "statusCode": "5xx", "p100": "250ms" }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### Fixed load with small bursts
+
+The 200 ms window allows two starts together, producing small bursts with a
+local ceiling of ten starts per second. The 570-start minute window lowers the
+long-running average to at most 9.5 starts per second.
+
+```json
+{
+  "agreements": [
+    {
+      "consumer": "lightly-bursty-client",
+      "provider": "example-api",
+      "slo": [
+        {
+          "endpoint": {
+            "host": "localhost",
+            "method": "GET",
+            "pathTemplate": "/headers"
+          },
+          "loadConstraints": [
+            {
+              "amount": 2,
+              "per-time-unit": "200ms"
+            },
+            {
+              "amount": 570,
+              "per-time-unit": "minute",
+              "permittedFailures": [
+                { "category": "transport", "amount": 5 },
+                { "category": "http_5xx", "amount": 3 },
+                {
+                  "category": "functional",
+                  "amount": 6,
+                  "statusCodes": ["400", "404", "409", "422"]
+                }
+              ]
+            }
+          ],
+          "responseTimes": [
+            {
+              "statusCode": 200,
+              "mean": "100ms",
+              "median": "90ms",
+              "p99": "200ms",
+              "p100": "250ms"
+            },
+            { "statusCode": "5xx", "p100": "250ms" }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+#### Spiky within an hour, normal over longer periods
+
+The one-second constraint permits bursts of up to 100 starts. The hour and day
+constraints cap the totals at 3,600 and 86,400, respectively, so short spikes
+remain possible while the longer-term allowance averages one start per second.
+
+```json
+{
+  "agreements": [
+    {
+      "consumer": "spiky-client",
+      "provider": "example-api",
+      "slo": [
+        {
+          "endpoint": {
+            "host": "localhost",
+            "method": "GET",
+            "pathTemplate": "/headers"
+          },
+          "loadConstraints": [
+            {
+              "amount": 100,
+              "per-time-unit": "second"
+            },
+            {
+              "amount": 3600,
+              "per-time-unit": "hour",
+              "permittedFailures": [
+                { "category": "transport", "amount": 20 },
+                { "category": "http_5xx", "amount": 18 },
+                {
+                  "category": "functional",
+                  "amount": 36,
+                  "statusCodes": ["400", "404", "409", "422"]
+                }
+              ]
+            },
+            {
+              "amount": 86400,
+              "per-time-unit": "day"
+            }
+          ],
+          "responseTimes": [
+            {
+              "statusCode": 200,
+              "mean": "150ms",
+              "median": "125ms",
+              "p99": "400ms",
+              "p100": "500ms"
+            },
+            { "statusCode": "5xx", "p100": "500ms" }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+These values are upper bounds, not required baselines. The maximum-stress
+planner schedules the earliest and largest batches permitted by every active
+window. The generated manifest therefore exposes the exact burst pattern before
+load generation begins.
+
+Each rolling load constraint can also contain `permittedFailures`. Their
+integer `amount` inherits the load constraint's window, making the budget exact
+and its percentage derivable without floating-point input. The `transport`
+category combines all request-level transport failures and returned HTTP 504
+gateway timeouts without requiring agreements on lower-level failure kinds.
+The general HTTP 5xx category excludes 504 to prevent double counting. Functional
+budgets may list explicit non-2xx, non-5xx
+`statusCodes`; a future OpenAPI adapter can populate these from declared error
+responses. An omitted budget is unspecified, while `amount: 0` explicitly
+permits no failures of that category. These budgets are recorded in the DSL and
+manifest. For each budget, k6 receives a check on every applicable operation.
+Permitted failures pass that check; the first failure beyond the rolling ceiling
+fails it, which breaches an attached `rate==1` threshold. A breach also makes the
+run fail after execution, independently of the unavailable internal k6 threshold
+engine.
+
+Status-specific `p100` response-time objectives also emit k6 checks with
+`rate==1`. Each returned response matching the objective's status code passes
+only when its k6 HTTP request duration is at or below the declared `p100`.
+Mean, median, and p99 remain aggregate objectives and are not represented as
+per-response Boolean checks.
 
 `--html-output` is generated in the Go process from the collected summary. Runtime generation does not invoke the k6 CLI, Node.js, a subprocess, or a network import; the pinned reporter bundle and license are stored under `third_party/k6-reporter/v3.0.4`.
 
@@ -231,6 +445,6 @@ Pact request paths and queries are resolved against `--pact-provider-url`. The c
 
 The two example contracts in `testdata/pacts` are based on httpbin's local specification at `http://localhost:8080/spec.json`. They cover GET query reflection, JSON POST reflection, JSON and text bodies, custom response headers, a cookie-setting redirect, and 204 and 418 status responses. One interaction deliberately calls `/status/200` while expecting status 300 so the generated metrics and report include a Pact verification failure. Integration tests serve the contracts with `github.com/mccutchen/go-httpbin/v2/httpbin` instead of duplicating httpbin route definitions.
 
-Each iteration sends one Pact interaction, cycling through all loaded interactions. A failed response check is recorded in the built-in `checks` metric and breaches `rate==1` on the `checks{check:pact response matches}` submetric. Threshold evaluation is currently reported at shutdown and does not stop or fail the load run; transport failures remain HTTP request failures.
+Each iteration sends one Pact interaction, cycling through all loaded interactions. A failed response check is recorded in the built-in `checks` metric and breaches `rate==1` on the `checks{check:pact response matches}` submetric. The run finishes output generation, then returns an error so the executable exits non-zero. Transport failures remain HTTP request failures and also fail an enabled response check when the response cannot satisfy it.
 
 The Pact adapter uses the public `pact-go` specification-version and provider-state types. The SDK's public API does not expose individual parsed interactions or match results, so the repository includes the small JSON compatibility layer needed to connect Pact files to k6's per-request metrics.
