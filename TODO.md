@@ -81,3 +81,30 @@ For each of the TODO items, first verify whether the goal already has been achie
      names are
      `pact.consumer_service`, `pact.provider_service`, `pact.endpoint`,
      `pact.interaction`, and `pact.provider_state`.
+
+8. **Generate maximum-stress load plans from SLA agreements (status: implemented)**:
+   * Decode `example_agreements.yaml` into source-neutral DSL load envelopes.
+   * Preserve every agreed amount and rolling time window in the manifest instead
+     of reducing constraints to a floating-point rate.
+   * Calculate a deterministic maximum-stress schedule before execution. At each
+     point, schedule the earliest and largest batch allowed by the intersection
+     of all applicable rolling-window constraints.
+   * Apply an exact positive `loadScalingFactor` to constraint amounts while
+     retaining their periods: `1` uses the agreement, `10` generates ten times
+     the agreed load, and `0.1` generates ten percent.
+   * Store the original requirements, effective scaled constraints, planning
+     assumptions, VU calculation, and complete executor-ready phase plan in a
+     schema-v3 manifest so it can be validated without generating traffic.
+   * Replace the legacy baseline and segment load fields. Direct and Pact runs
+     without agreements emit an explicit shared-iterations phase.
+   * Map precomputed phases to public k6 executors. Executors perform no SLA or
+     rate calculations; a small local orchestrator only starts them at planned
+     offsets.
+   * Retain `--iterations`, `--vus`, and `--max-duration` only for explicit
+     direct/Pact load. Reject them with agreement-derived load, remove
+     `--min-iteration-duration`, and
+     add `--load-scaling-factor`, `--max-planned-operations`, and
+     `--generator-max-vus` planning controls.
+   * Treat dropped iterations or unmet planned starts as load-generation failure.
+   * Backwards compatibility is not required because the software is unreleased;
+     reject pre-v3 manifests and do not retain legacy load decoding paths.

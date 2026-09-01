@@ -47,7 +47,7 @@ Production metric samples use k6's built-in metric objects rather than recreatin
 
 ### Benchmark manifest
 
-`--benchmark-manifest-output PATH` is optional and disabled by default. When provided, direct or Pact input is synthesized and validated before execution, then the `SynthesizedBenchmark` data is atomically published as a deterministic, versioned JSON `BenchmarkManifest` ending in a newline. Schema version 2 uses source-neutral `attributes`, `metadata`, and `groupBy` fields. Source adapters own their attribute names; `groupBy` only selects which declared attributes split aggregate report series. The manifest also contains request paths, queries, expectations, checks, thresholds, load, segments, provenance, and human-readable descriptions of runtime request generation and response matching. It contains no provider base URL, executable callbacks, or k6 runtime objects. A decoded manifest therefore uses identity request materialization and unconditional response matching until a source adapter rebinds runtime behavior. Round-trip validation occurs before rename, so generation or validation failure leaves an existing destination unchanged.
+`--benchmark-manifest-output PATH` is optional and disabled by default. When provided, direct or Pact input is synthesized and validated before execution, then the `SynthesizedBenchmark` data is atomically published as a deterministic, versioned JSON `BenchmarkManifest` ending in a newline. Schema version 3 uses source-neutral `attributes`, `metadata`, `groupBy`, SLA load requirements, and executor-ready load phases. Source adapters own their attribute names; `groupBy` only selects which declared attributes split aggregate report series. The manifest also contains request paths, queries, expectations, checks, thresholds, segments, provenance, and human-readable descriptions of runtime request generation and response matching. It contains no provider base URL, executable callbacks, or k6 runtime objects. A decoded manifest therefore uses identity request materialization and unconditional response matching until a source adapter rebinds runtime behavior. Round-trip validation occurs before rename, so generation or validation failure leaves an existing destination unchanged.
 
 Pact-owned attributes use the `pact` namespace: `pact.consumer_service`,
 `pact.provider_service`, `pact.endpoint`, `pact.interaction`, and
@@ -110,7 +110,6 @@ go run '.' run \
   --url 'http://localhost:8080/headers' \
   --vus 2 \
   --iterations 2000 \
-  --min-iteration-duration 25ms \
   --request-timeout 10s \
   --max-duration 30s \
   --json-output 'metrics.json' \
@@ -120,7 +119,16 @@ go run '.' run \
   --benchmark-manifest-output 'benchmark-manifest.json'
 ```
 
-`--min-iteration-duration` defaults to 25 milliseconds. Completed iterations shorter than this value wait only for the remaining time, and the wait is excluded from `iteration_duration`.
+For agreement-derived stress, replace `--vus`, `--iterations`, and
+`--max-duration` with
+`--agreements example_agreements.yaml`. The planner preserves each rolling
+window, schedules the maximum permitted operation starts, derives peak VUs
+from the agreement's worst-case response duration, and writes both the source
+requirements and executor-ready phases to the benchmark manifest.
+`--load-scaling-factor` scales only operation amounts: `1` uses the agreement,
+`10` requests ten times its load, and `0.1` requests ten percent while retaining
+the original windows. `--max-planned-operations` and `--generator-max-vus` are
+safety bounds.
 
 `--html-output` is generated in the Go process from the collected summary. Runtime generation does not invoke the k6 CLI, Node.js, a subprocess, or a network import; the pinned reporter bundle and license are stored under `third_party/k6-reporter/v3.0.4`.
 

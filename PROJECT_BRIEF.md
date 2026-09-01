@@ -112,14 +112,14 @@ the k6 CLI or JavaScript runtime.
   isolated between VUs.
 - Close idle per-VU connections when a VU activation ends.
 
-## Iteration pacing requirements
+## Load planning requirements
 
-- Model k6's minIterationDuration behavior.
-- Measure the iteration before pacing.
-- Sleep only for the remaining portion of the configured minimum.
-- Exclude the pacing wait from iteration_duration.
-- Emit completed-iteration metrics before waiting.
-- Make the pacing wait cancellable.
+- Keep explicit `--vus` and `--iterations` for direct and Pact loads without agreements.
+- Compile SLA rolling-window constraints into a deterministic maximum-stress schedule before execution.
+- Scale operation ceilings exactly with `--load-scaling-factor` while retaining their time windows.
+- Derive peak VUs from planned start overlap and the agreement's worst-case response duration.
+- Persist original requirements, effective constraints, assumptions, and executor-ready phases in schema-v3 manifests.
+- Reject plans that exceed configured operation or generator-VU safety bounds, and fail runs with unmet starts.
 
 ## Pact contract requirements
 
