@@ -162,8 +162,16 @@ func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T)
 		failing.SpanContext.TraceID() == fixed.SpanContext.TraceID() {
 		t.Fatal("workload spans do not have independent trace IDs")
 	}
-	if got, ok := spanAttributeValue(passing, pact.AttributeProviderState); !ok || got != "the provider is ready" {
-		t.Fatalf("provider state = %q, %t, want %q", got, ok, "the provider is ready")
+	for name, want := range map[string]string{
+		pact.AttributeConsumerService: "trace-consumer",
+		pact.AttributeProviderService: "trace-provider",
+		pact.AttributeEndpoint:        "GET /teapot",
+		pact.AttributeInteraction:     "pact:teapot",
+		pact.AttributeProviderState:   "the provider is ready",
+	} {
+		if got, ok := spanAttributeValue(passing, name); !ok || got != want {
+			t.Errorf("Pact span attribute %q = %q, %t, want %q", name, got, ok, want)
+		}
 	}
 	if passing.Status.Code != codes.Ok {
 		t.Fatalf("expected 418 Pact span status = %v, want OK", passing.Status.Code)

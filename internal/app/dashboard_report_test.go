@@ -40,7 +40,7 @@ func TestDashboardReportOutputWritesOfflineInteractiveReport(t *testing.T) {
 	dashboard, err := NewDashboardReportOutputWithOptions(params, DashboardReportOptions{
 		Filename: reportPath,
 		Period:   time.Second,
-		Tags:     []string{"pact_interaction"},
+		Tags:     []string{"pact.interaction"},
 	})
 	if err != nil {
 		t.Fatalf("create dashboard report output: %v", err)
@@ -55,7 +55,7 @@ func TestDashboardReportOutputWritesOfflineInteractiveReport(t *testing.T) {
 	at := time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC)
 	failedTags := registry.RootTagSet().
 		With("group", "::contracts").
-		With("pact_interaction", "failed interaction").
+		With("pact.interaction", "failed interaction").
 		With(metrics.TagCheck.String(), "pact response matches")
 	dashboard.AddMetricSamples([]metrics.SampleContainer{metrics.ConnectedSamples{
 		Time: at,
@@ -127,14 +127,14 @@ func TestDashboardReportOutputWritesOfflineInteractiveReport(t *testing.T) {
 	if graphConfig.Title != "k6 dashboard" || len(graphConfig.Tabs) == 0 {
 		t.Fatalf("dashboard report has no usable graph configuration: %#v", graphConfig)
 	}
-	if !dashboardReportContainsString(reportParams.Tags, "pact_interaction") ||
+	if !dashboardReportContainsString(reportParams.Tags, "pact.interaction") ||
 		!dashboardReportContainsString(reportParams.Aggregates[metrics.Counter.String()], "rate") {
 		t.Fatalf("dashboard report has incomplete graph parameters: %#v", reportParams)
 	}
 	if !dashboardReportContainsString(metricNames, "http_reqs") {
 		t.Fatalf("metric event does not contain http_reqs: %v", metricNames)
 	}
-	failedSeries := "http_req_failed{pact_interaction:failed interaction}"
+	failedSeries := "http_req_failed{pact.interaction:failed interaction}"
 	if !dashboardReportContainsString(metricNames, failedSeries) {
 		t.Fatalf("metric event does not contain failed Pact series: %v", metricNames)
 	}
@@ -408,7 +408,7 @@ func TestDashboardReportOutputExposesOneTagGraphLimitation(t *testing.T) {
 	builtin := metrics.RegisterBuiltinMetrics(registry)
 	output, err := NewDashboardReportOutputWithOptions(output.Params{FS: fsext.NewOsFs()}, DashboardReportOptions{
 		Filename: filepath.Join(t.TempDir(), "dashboard.html"),
-		Tags:     []string{"consumer_service", "pact_interaction"},
+		Tags:     []string{"pact.consumer_service", "pact.interaction"},
 	})
 	if err != nil {
 		t.Fatalf("create dashboard report output: %v", err)
@@ -417,7 +417,7 @@ func TestDashboardReportOutputExposesOneTagGraphLimitation(t *testing.T) {
 		t.Fatalf("start dashboard report output: %v", err)
 	}
 	at := time.Date(2026, time.August, 29, 12, 0, 0, 0, time.UTC)
-	tags := registry.RootTagSet().With("consumer_service", "consumer").With("pact_interaction", "interaction")
+	tags := registry.RootTagSet().With("pact.consumer_service", "consumer").With("pact.interaction", "interaction")
 	output.AddMetricSamples([]metrics.SampleContainer{metrics.ConnectedSamples{
 		Time: at,
 		Samples: []metrics.Sample{

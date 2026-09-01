@@ -23,11 +23,11 @@ import (
 )
 
 const (
-	AttributeConsumerService = "consumer_service"
-	AttributeProviderService = "provider_service"
-	AttributeEndpoint        = "endpoint"
-	AttributeInteraction     = "pact_interaction"
-	AttributeProviderState   = "provider_state"
+	AttributeConsumerService = "pact.consumer_service"
+	AttributeProviderService = "pact.provider_service"
+	AttributeEndpoint        = "pact.endpoint"
+	AttributeInteraction     = "pact.interaction"
+	AttributeProviderState   = "pact.provider_state"
 	pactFileMetadata         = "pact_file"
 	pactDescriptionMeta      = "pact_description"
 	pactMismatchMetadata     = "pact_mismatch"

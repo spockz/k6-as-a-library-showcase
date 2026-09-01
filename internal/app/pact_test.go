@@ -62,9 +62,9 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 		"checks_failed......: 11.11% 5 out of 45",
 		"✗ " + pactResponseCheckName,
 		"↳  88% — ✓ 40 / ✗ 5",
-		"consumer_service:httpbin-request-consumer",
-		"consumer_service:httpbin-response-consumer",
-		"provider_service:httpbin,endpoint:GET /status/200,pact_interaction:" + intentionalPactMismatchInteraction,
+		"pact.consumer_service:httpbin-request-consumer",
+		"pact.consumer_service:httpbin-response-consumer",
+		"pact.provider_service:httpbin,pact.endpoint:GET /status/200,pact.interaction:" + intentionalPactMismatchInteraction,
 		"100.00% 5 out of 5",
 		"HTTP",
 		"http_req_duration",
@@ -80,7 +80,7 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 	}
 	assertPactFailureInConsoleMetric(t, stdout.String(), metrics.ChecksName, "0.00% 0 out of 5")
 	assertPactFailureInConsoleMetric(t, stdout.String(), metrics.HTTPReqFailedName, "100.00% 5 out of 5")
-	if count := strings.Count(stdout.String(), "provider_state:httpbin supports teapot responses"); count != 4 {
+	if count := strings.Count(stdout.String(), "pact.provider_state:httpbin supports teapot responses"); count != 4 {
 		t.Errorf("console output contains %d provider-state metric rows, expected four:\n%s", count, stdout.String())
 	}
 	for _, filename := range []string{config.jsonFilename, config.htmlFilename, config.dashboardFilename, config.combinedFilename, config.benchmarkManifestFilename} {
@@ -148,7 +148,7 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 	}
 	dashboardEvents := decodeDashboardReportEvents(t, mustReadFile(t, config.dashboardFilename))
 	metricNames := dashboardReportMetricNames(t, dashboardEvents)
-	failedRequestSeries := "http_req_failed{pact_interaction:" + intentionalPactMismatchInteraction + "}"
+	failedRequestSeries := "http_req_failed{pact.interaction:" + intentionalPactMismatchInteraction + "}"
 	if !dashboardReportContainsString(metricNames, failedRequestSeries) {
 		t.Fatalf("Pact dashboard report is missing failed request series %q: %v", failedRequestSeries, metricNames)
 	}
@@ -180,9 +180,9 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 		pactResponsesValidThreshold,
 		"Failed",
 		DashboardReportOneTagDiagnosticCode,
-		"consumer_service",
-		"provider_service",
-		"pact_interaction",
+		"pact.consumer_service",
+		"pact.provider_service",
+		"pact.interaction",
 	} {
 		if !bytes.Contains(combinedReport, []byte(fragment)) {
 			t.Errorf("Pact combined report is missing %q", fragment)
@@ -426,8 +426,8 @@ func TestSummaryOutputSplitsPactMetricsByTags(t *testing.T) {
 		"checks_failed......: 50.00% 1 out of 2",
 		"CUSTOM",
 		"\n    checks.",
-		"consumer_service:consumer-a,provider_service:provider-a",
-		"consumer_service:consumer-b,provider_service:provider-b",
+		"pact.consumer_service:consumer-a,pact.provider_service:provider-a",
+		"pact.consumer_service:consumer-b,pact.provider_service:provider-b",
 		"HTTP",
 		"http_req_duration",
 		"http_req_failed",

@@ -11,6 +11,30 @@ import (
 	"k6-as-a-library/internal/dsl"
 )
 
+func TestAttributeNamesUsePactNamespace(t *testing.T) {
+	t.Parallel()
+
+	want := map[string]string{
+		"consumer service": AttributeConsumerService,
+		"provider service": AttributeProviderService,
+		"endpoint":         AttributeEndpoint,
+		"interaction":      AttributeInteraction,
+		"provider state":   AttributeProviderState,
+	}
+	expected := map[string]string{
+		"consumer service": "pact.consumer_service",
+		"provider service": "pact.provider_service",
+		"endpoint":         "pact.endpoint",
+		"interaction":      "pact.interaction",
+		"provider state":   "pact.provider_state",
+	}
+	for meaning, name := range want {
+		if name != expected[meaning] {
+			t.Errorf("%s attribute = %q, want %q", meaning, name, expected[meaning])
+		}
+	}
+}
+
 func TestLoadDirectoryLoadsAllInteractions(t *testing.T) {
 	t.Parallel()
 

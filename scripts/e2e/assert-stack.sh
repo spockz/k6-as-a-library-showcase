@@ -90,7 +90,7 @@ if ! jq -e -s --argjson minimum "$expected_failure_minimum" '
   fail "JSON metrics contain fewer failed requests than the deliberate Pact mismatch minimum"
 fi
 if ! jq -e -s '
-  any(.[]; .type == "Point" and .metric == "http_reqs" and .data.tags.provider_service == "httpbin")
+  any(.[]; .type == "Point" and .metric == "http_reqs" and .data.tags["pact.provider_service"] == "httpbin")
 ' "$metrics_file" >/dev/null; then
   fail "JSON metrics contain no request tagged with the Pact provider"
 fi
@@ -106,7 +106,7 @@ for endpoint in \
   'GET /status/418' \
   'GET /status/200'; do
   if ! jq -e -s --arg endpoint "$endpoint" '
-    any(.[]; .type == "Point" and .metric == "http_reqs" and .data.tags.endpoint == $endpoint)
+    any(.[]; .type == "Point" and .metric == "http_reqs" and .data.tags["pact.endpoint"] == $endpoint)
   ' "$metrics_file" >/dev/null; then
     fail "JSON metrics contain no request for Pact endpoint $endpoint"
   fi
