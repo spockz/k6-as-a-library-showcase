@@ -35,13 +35,56 @@ using k6 shared iterations. It provides:
 - an optional self-contained interactive dashboard HTML report generated from the same final metric stream
 - an optional combined HTML report that uses k6-reporter as its visual base, embeds the unchanged interactive dashboard in an isolated graph region, and retains exhaustive local tables
 - an optional deterministic benchmark manifest generated from the validated direct or Pact `SynthesizedBenchmark`
-- a `rate==1` threshold on Pact response checks requiring every response to
-  match its contract
+- a `rate==1` threshold on the current Pact response compatibility check
 - an optional live dashboard
 - CLI, metrics, HTTP behavior, report, and dashboard tests
 
 The fixed workload is intentionally narrower than a general replacement for
 the k6 CLI or JavaScript runtime.
+
+## Package architecture requirements
+
+- `internal/pact` is a source adapter. It may load and interpret Pact files and
+  translate Pact examples, generators, matching rules, and semantics into the
+  source-neutral DSL, including runtime behavior bound through DSL interfaces.
+  It must not depend on k6 execution, metrics, OpenTelemetry, or reporting
+  packages.
+- `internal/dsl` is the pure domain model. It owns DSL types, normalization,
+  cloning, serialization, and validation, plus source-neutral contracts for
+  runtime materialization and matching. It must not perform HTTP requests,
+  emit metrics, or depend on Pact, k6, OpenTelemetry, or reporting packages.
+- Source adapters attach stable, indexable semantic information to cases and
+  segments as DSL attributes. Attribute names and meanings belong to the
+  source adapter; the DSL does not define Pact-specific attribute names.
+- `AttributeSet` provides name-based lookup and deterministic override
+  semantics for this extensible data. Source-specific information is not
+  modeled as fixed fields on the generic case type.
+- DSL metadata carries non-indexed provenance and diagnostic information.
+  `ReportSpec.GroupBy` selects which emitted attribute names split aggregate
+  report series. Every selected name must be declared by a case or segment,
+  and `MaxSeriesCardinality` constrains the resulting series count. Reporting
+  configuration does not transfer source data.
+- `internal/benchmark` owns execution of a validated DSL benchmark. It
+  materializes requests, validates concrete requests, adapts them to HTTP,
+  executes them through k6, matches concrete responses, and emits the metric
+  and telemetry events produced by execution.
+- Benchmark execution propagates case and active-segment attributes to metrics
+  and telemetry without interpreting source-specific names. Active-segment
+  values override case values with the same name.
+- OpenTelemetry integration belongs to the benchmark execution boundary.
+  Its implementation may remain in a dedicated infrastructure package, but no
+  source adapter, DSL, or reporting package may depend on it; application
+  wiring must expose neutral benchmark configuration rather than leak
+  OpenTelemetry types across package boundaries.
+- `internal/report` consumes metric samples, finalized summaries, and dashboard
+  event streams to produce terminal, HTML, combined, and live reports. It must
+  not depend on Pact or other input adapters, execute requests, or own benchmark
+  verification semantics.
+- `internal/app` is the composition and CLI boundary. It parses user input,
+  selects adapters, and wires benchmark execution to outputs, but does not own
+  workload execution, source semantics, or report rendering.
+- Dependencies point inward through the DSL and neutral execution/reporting
+  contracts. Source adapters and reporting remain independent of one another.
 
 ## k6 integration requirements
 
@@ -74,6 +117,33 @@ the k6 CLI or JavaScript runtime.
 - Emit completed-iteration metrics before waiting.
 - Make the pacing wait cancellable.
 
+## Pact contract requirements
+
+- Interpret Pact HTTP interactions according to the semantics of their declared
+  Pact specification version.
+- Materialize each outgoing request from its Pact example and generators, then
+  verify that the concrete request satisfies all applicable request matching
+  rules before sending it.
+- For interactions with provider state, add the provider-state value to the
+  outgoing request. Configure the header name with
+  `--pact-provider-state-header`; default it to
+  `X-PACT-RequestedProviderState`.
+- Verify each concrete provider response with the applicable Pact response
+  matching rules and matching semantics, including rule selection, cascading,
+  combination, and collection behavior; do not substitute plain equality or
+  ad hoc matching where Pact defines different behavior.
+- Reject unsupported Pact versions, interaction types, generators, matcher
+  categories, or matcher variants explicitly instead of silently weakening the
+  contract.
+- Bind source-specific generators and matchers through Pact-independent DSL
+  runtime hooks. `RequestSpec.Materialize` must return an independent concrete
+  request, and `RequestSpec.Match` must evaluate an independently owned response
+  snapshot.
+  Requests without hooks use identity materialization and unconditional matching.
+- Keep runtime hooks out of `BenchmarkManifest` JSON, but serialize concise
+  descriptions of the values they generate and the response conditions they
+  match. A decoded manifest does not regain executable runtime behavior.
+
 ## Output requirements
 
 - Fan metric samples out through output.Manager.
@@ -91,7 +161,11 @@ the k6 CLI or JavaScript runtime.
 - Publish the combined report atomically from finalized existing summary and dashboard state without adding another sample aggregator.
 - Keep the combined artifact self-contained by removing the reporter template's external resource links, and isolate dashboard CSS and JavaScript from the reporter document.
 - Synthesize direct and Pact inputs into a versioned, target-independent `SynthesizedBenchmark` before execution; keep bound target URLs and k6 runtime objects out of the serialized model.
-- When `--benchmark-manifest-output` is set, serialize the exact validated benchmark as a deterministic `BenchmarkManifest` with a trailing newline, validate it by round-trip decoding, and publish it atomically from a temporary file.
+- When `--benchmark-manifest-output` is set, serialize the exact validated
+  benchmark data and runtime-behavior descriptions as a deterministic
+  `BenchmarkManifest` with a trailing newline, validate it by round-trip
+  decoding, and publish it atomically from a temporary file. Do not serialize
+  executable runtime hooks.
 - Surface output and artifact errors rather than silently ignoring them.
 
 ## Remaining differences from the k6 binary
@@ -124,6 +198,13 @@ the k6 CLI or JavaScript runtime.
    are not caused by the internal-package boundary. Remove the local renderer
    if k6 exposes this functionality publicly or the module moves into the k6
    source tree.
+10. The Pact adapter materializes static HTTP examples but does not apply
+    generators or verify the concrete request against request matching rules.
+    Response verification is a partial local compatibility matcher: it does not
+    implement all declared V2 through V4 matcher, combination, cascading,
+    body-format, or collection semantics. The pinned pact-go public API can run
+    whole-provider verification but does not expose per-exchange HTTP match
+    results for the benchmark path.
 
 ## Next priorities
 
@@ -151,6 +232,9 @@ the k6 CLI or JavaScript runtime.
 - Cover terminal metric categories, typed values, thresholds, checks, groups,
   ANSI colors, and Pact-tagged submetrics.
 - Cover direct and Pact benchmark manifests, deterministic encoding, round-trip validation, target independence, default-disabled and explicit-empty behavior, output-path collisions, and preservation of existing destinations after failed publication.
+- Cover request materialization and request and response verification with Pact
+  compatibility fixtures for every supported specification version, matcher,
+  rule combination, and generator.
 - Keep JSON schema compatibility checks against the pinned k6 source.
 - Run gofmt, gopls diagnostics, go vet, the full test suite, and the race
   detector after Go changes.

@@ -14,7 +14,7 @@ For each of the TODO items, first verify whether the goal already has been achie
    * Add unit and integration coverage for metrics, Pact tags, failed interactions, spans, propagation, cancellation, and final flushing.
    * Document the local compatibility code and remove it if k6 exposes equivalent public APIs or this project moves inside the k6 module tree.
    * Implemented on 2026-08-30 with OTLP/HTTP and OTLP/gRPC metrics, request and interaction traces, propagation, shared `benchmark.run_id` correlation, final flushing, surfaced lifecycle errors, and focused integration coverage.
-   * Metric attributes now use a bounded allowlist and normalize endpoint-like values. Revisit the allowlist when new source adapters add dimensions, and keep rich source identity in metadata or traces instead of unbounded metric labels.
+   * OpenTelemetry metric attributes include the benchmark's bounded `groupBy` selection. Source adapters must provide stable, low-cardinality grouping values and keep richer source identity in metadata or traces.
 
 2. **Facilitate an end-to-end telemetry test (status: implemented and verified)**:
    * Add a version-pinned Compose Specification stack validated with an explicitly selected Podman Compose provider.
@@ -32,7 +32,7 @@ For each of the TODO items, first verify whether the goal already has been achie
    * Add parity tests for metric totals, tag-split series, named and nested groups, checks, threshold definitions and results, failed Pact interactions, short runs, final snapshots, and cancellation-adjacent runs before combining the reports.
    * After parity is established, create one self-contained HTML artifact using the k6-reporter document as the visual base, an isolated xk6-dashboard graph region, and a locally generated table section for tags, groups, checks, and thresholds.
    * Do not fork the dashboard frontend for the first combined version. Keep graph and table rendering independently testable and preserve the two-report output for diagnostics.
-   * Preserve arbitrary Pact tag combinations in the table section even where the dashboard graph model supports only one tag dimension, and document any graph-filter limitation visibly.
+   * Preserve arbitrary Pact attribute combinations in the table section even where the dashboard graph model supports only one grouping attribute, and document any graph-filter limitation visibly.
    * Remove or bundle external table-report resources so the combined artifact works offline, and review the xk6-dashboard AGPL and k6-reporter MIT distribution obligations.
    * The runner now supplies plan thresholds through k6's public `output.WithThresholds` contract before outputs start. The Pact integration test verifies the failed threshold in the dashboard event stream.
    * Stage-1 parity tests now cover shared aggregate and trend values, arbitrary Pact tag combinations, checks, passing and failing thresholds, named and nested groups, the graph model diagnostic, short runs, final snapshots, and cancellation-adjacent finalization.
@@ -41,14 +41,14 @@ For each of the TODO items, first verify whether the goal already has been achie
    * The combined document contains visible source and license notices for the pinned AGPL-3.0 xk6-dashboard components and the MIT k6-reporter document. External reporter resource links are removed so the artifact remains usable offline. Distribution owners must still approve the corresponding-source and notice mechanism for their packaging context.
 
 4. **Introduce a versioned intermediate execution DSL (status: core model and runtime migration implemented; follow-ups pending)**:
-   * Add a pure `internal/dsl` Go model for validated request cases, operation identity, response expectations, checks, thresholds, load profiles, time segments, labels, metadata, and source provenance.
+   * Add a pure `internal/dsl` Go model for validated request cases, operation identity, response expectations, checks, thresholds, load profiles, time segments, attributes, metadata, and source provenance.
    * Keep synthesized benchmarks target-independent and serializable as deterministic, human-inspectable versioned JSON. Do not store k6 runtime objects, bound target URLs, live HTTP requests, cookie jars, transports, contexts, or response objects in the model.
    * Add separate source adapters for Pact and future OpenAPI, SLA/SLO, and segment inputs. Keep source-specific decoding and matcher compilation outside the execution layer.
-   * Add a composition and validation layer for normalization, reference resolution, conflict diagnostics, schema versions, methods, paths, bodies, matchers, IDs, labels, segment windows, load, checks, and thresholds.
+   * Add a composition and validation layer for normalization, reference resolution, conflict diagnostics, schema versions, methods, paths, bodies, matchers, IDs, attributes, segment windows, load, checks, and thresholds.
    * Add a pure response-verification layer that returns structured results, and a separate k6 adapter that consumes only validated synthesized benchmarks and preserves `httpext.MakeRequest`, built-in HTTP metrics, system tags, cookies, redirects, cancellation, and iteration pacing.
-   * Preserve all current Pact request, matching, tag, metadata, check, request-failure, report, and JSON behavior during migration.
+   * Preserve all current Pact request, matching, attribute, metadata, check, request-failure, report, and JSON behavior during migration.
    * Initially support fixed shared-iteration load, deterministic case selection, and segment-based check activation. Reject dynamic VU, arrival-rate, segment-gap, and other unsupported semantics before execution unless an explicit supported policy is configured.
-   * Reject conflicting SLA/SLO policies unless precedence or merge behavior is declared. Allowlist metric/report dimensions to control cardinality while retaining richer identity as metadata and future trace attributes.
+   * Reject conflicting SLA/SLO policies unless precedence or merge behavior is declared. Allowlist report grouping attributes to control cardinality while retaining richer identity as metadata and trace attributes.
    * Add an optional benchmark manifest and observable tests for source-to-benchmark synthesis, JSON round trips, validation failures, request translation, verification, selection, segment boundaries, capability rejection, k6 samples, reports, metadata, and future OTEL correlation.
    * Direct and Pact inputs now adapt into a validated `internal/dsl.SynthesizedBenchmark` before k6 execution. Composition, deterministic selection, request translation, response expectations, checks, thresholds, metadata, and provenance are represented in the model.
    * Nested header, cookie, and body matcher collections preserve missing, explicit null, and explicit empty JSON states.
@@ -64,9 +64,15 @@ For each of the TODO items, first verify whether the goal already has been achie
    * **Completed: surface output shutdown errors.** Managed outputs retain start, export, flush, and stop failures and join them into the error returned by `run`.
    * **Completed: strengthen artifact publication and validation.** JSON and standalone HTML artifacts are rendered to temporary files, structurally validated, and atomically renamed; failed generation or validation preserves existing destinations.
    * **Completed: preserve all summary aggregation errors.** Aggregation failures are joined instead of retaining only the first error.
-   * **Completed review finding: bound OpenTelemetry metric cardinality.** Metric labels use a stable allowlist, endpoint-like values are normalized, and raw URLs, errors, IPs, and other high-cardinality tags are excluded.
+   * **Completed review finding: bound OpenTelemetry metric cardinality.** Metric attributes include the benchmark's stable `groupBy` selection, and raw URLs, errors, IPs, and other high-cardinality tags are excluded.
    * **Completed review finding: correlate telemetry signals.** One generated `benchmark.run_id` is attached to metric and trace resources and propagated into benchmark, interaction, and request spans.
    * **Completed review finding: validate metric descriptors.** Reusing an instrument name with a conflicting k6 type, OpenTelemetry unit, or value kind is rejected.
    * **Completed review finding: make output shutdown terminal.** The OpenTelemetry output cannot be started again after `Stop`, including a stop-before-start call.
    * **Completed review finding: preserve nested DSL presence.** Header values and matchers, cookie values and matchers, and body matchers distinguish missing, null, and empty states through JSON, normalization, and validation.
    * **Completed review finding: propagate dashboard thresholds.** The external runner performs the threshold handoff that k6's internal engine normally owns before starting outputs.
+
+7. **Refine OpenTelemetry tracing (status: implemented and verified)**:
+   * Each interaction is the root span of an independent trace with an OpenTelemetry link to the benchmark span. Its HTTP client span remains a child in the interaction trace.
+   * The benchmark span remains open for the complete benchmark run.
+   * Pact interaction root spans emit the source-owned `provider_state` attribute when applicable.
+   * Tests cover independent interaction trace IDs, benchmark links, HTTP parentage, propagation, and provider-state attributes.

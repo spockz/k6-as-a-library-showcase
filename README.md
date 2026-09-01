@@ -16,11 +16,12 @@ The project also serves as an exploration of k6's current public Go API boundari
 ## Code layout
 
 - the repository root contains only the executable entry point
-- `internal/app` owns CLI configuration, k6 runner orchestration, benchmark synthesis, and cross-package integration tests
-- `internal/benchmark` and `internal/dsl` own the neutral synthesized benchmark, validation, composition, manifest publication, and execution queries
-- `internal/pact` owns Pact loading, matching, and Pact-to-benchmark adaptation
-- `internal/otel` owns OTLP metrics and trace configuration, transport, providers, and span emission
-- `internal/report` owns terminal, k6-reporter, dashboard, and combined report generation
+- `internal/app` owns CLI and environment configuration, source selection, output wiring, result presentation, and cross-package integration tests; it does not execute workloads
+- `internal/dsl` is the pure source-neutral model and owns types, normalization, cloning, serialization, validation, and runtime materialization and matching contracts
+- `internal/pact` loads and interprets Pact files and translates Pact examples, generators, matchers, and semantics into the DSL; it does not execute requests or render reports
+- `internal/benchmark` owns the validated synthesized benchmark, composition, manifest publication, selection, k6 scheduling and virtual users, HTTP execution, response verification, metrics, and telemetry emission
+- `internal/otel` implements OTLP transport and providers behind the benchmark execution boundary
+- `internal/report` consumes metrics and finalized data streams to generate terminal, k6-reporter, dashboard, combined, and live reports
 - `internal/artifact` and `internal/k6output` own validated atomic publication and k6 output adapters
 
 As observable through the used language, this project has been created with heavy assistance from Codex to find the proper integration points.
@@ -46,7 +47,9 @@ Production metric samples use k6's built-in metric objects rather than recreatin
 
 ### Benchmark manifest
 
-`--benchmark-manifest-output PATH` is optional and disabled by default. When provided, direct or Pact input is synthesized and validated before execution, then the exact `SynthesizedBenchmark` is atomically published as a deterministic, versioned JSON `BenchmarkManifest` ending in a newline. The manifest contains request paths, queries, expectations, checks, thresholds, load, segments, labels, metadata, and provenance, but no provider base URL or k6 runtime objects. Round-trip validation occurs before rename, so generation or validation failure leaves an existing destination unchanged.
+`--benchmark-manifest-output PATH` is optional and disabled by default. When provided, direct or Pact input is synthesized and validated before execution, then the `SynthesizedBenchmark` data is atomically published as a deterministic, versioned JSON `BenchmarkManifest` ending in a newline. Schema version 2 uses source-neutral `attributes`, `metadata`, and `groupBy` fields. Source adapters own their attribute names; `groupBy` only selects which declared attributes split aggregate report series. The manifest also contains request paths, queries, expectations, checks, thresholds, load, segments, provenance, and human-readable descriptions of runtime request generation and response matching. It contains no provider base URL, executable callbacks, or k6 runtime objects. A decoded manifest therefore uses identity request materialization and unconditional response matching until a source adapter rebinds runtime behavior. Round-trip validation occurs before rename, so generation or validation failure leaves an existing destination unchanged.
+
+`RequestSpec.Materialize` produces an independent request immediately before the HTTP adapter constructs the wire request. `RequestSpec.Match` evaluates an independently owned response snapshot after the request completes. Source adapters bind these operations through Pact-independent function types. A hand-written request with no bound behavior is unchanged by materialization and matches every response.
 
 An empty path disables the artifact, `-` is rejected, and collisions with JSON, HTML, dashboard, or combined output paths are rejected. A successful run prints `Benchmark manifest: PATH`.
 
@@ -91,7 +94,7 @@ The labels below distinguish an inability to reuse k6's canonical implementation
 
 11. **Partly internal: the offline dashboard report has a local event adapter.** `--dashboard-output` uses the public xk6-dashboard assets and k6 metric sinks, but the dashboard output's canonical report builder is private to the xk6-dashboard module. The local adapter therefore creates the pinned event stream and final snapshots itself. The graph's one-tag limitation is surfaced as a diagnostic; the table, JSON, and combined reports retain the complete tag combinations. `--combined-output` uses the k6-reporter document as its visual base, embeds the unchanged dashboard as an isolated graph application, and adds project-rendered semantic tables from the finalized local summary without introducing another metric aggregator.
 
-12. **Internal-package limitation: OpenTelemetry output and tracing require local compatibility code.** k6's canonical metric output and trace-provider configuration live in `internal/output/opentelemetry` and `internal/lib/trace`. This project uses k6's public output lifecycle and the OpenTelemetry Go SDK to export equivalent metrics, and instruments the existing native request and Pact-interaction lifecycle locally. Calling `httpext.MakeRequest` does not add tracing automatically: k6's JavaScript HTTP path delegates to the same request machinery and does not consume `lib.State.TracerProvider`. Metric labels use a bounded allowlist, while metrics and traces share `benchmark.run_id` for correlation. This code should be removed if k6 exposes equivalent public APIs or the project moves inside the k6 module tree.
+12. **Internal-package limitation: OpenTelemetry output and tracing require local compatibility code.** k6's canonical metric output and trace-provider configuration live in `internal/output/opentelemetry` and `internal/lib/trace`. This project uses k6's public output lifecycle and the OpenTelemetry Go SDK to export equivalent metrics, and instruments the generic benchmark-interaction lifecycle locally. Calling `httpext.MakeRequest` does not add tracing automatically: k6's JavaScript HTTP path delegates to the same request machinery and does not consume `lib.State.TracerProvider`. Metric attributes include a fixed safe k6 set plus the benchmark's configured `groupBy` attributes, while metrics and traces share `benchmark.run_id` for correlation. This code should be removed if k6 exposes equivalent public APIs or the project moves inside the k6 module tree.
 
 The `internal` boundary prevents direct reuse for items 1, 2, 4, 7, 8, 12, and parts of items 9 and 11. Items 3, 5, 6, and 10, plus aggregate metadata loss in item 9 and the dashboard graph model in item 11, are independent of that boundary. Further alignment should start with the locally implementable VU loop, I/O ordering, request defaults, and group modeling. JSON streaming, the full threshold lifecycle, canonical compact/full collection, and exact canonical summary data still require larger compatibility implementations around inaccessible packages.
 
@@ -116,7 +119,7 @@ go run '.' run \
 
 `--html-output` is generated in the Go process from the collected summary. Runtime generation does not invoke the k6 CLI, Node.js, a subprocess, or a network import; the pinned reporter bundle and license are stored under `third_party/k6-reporter/v3.0.4`.
 
-`--dashboard-output` is optional and writes the self-contained interactive xk6-dashboard report from the same finalized sample stream. It is disabled when omitted. Graph data is aggregated into populated periodic snapshots, including the final partial interval, so the offline time series retains the run's intermediate points. The dashboard graph model represents one configured tag dimension at a time; Pact runs retain full tag combinations in the table and JSON reports and emit a diagnostic for combinations that cannot be represented in the graph.
+`--dashboard-output` is optional and writes the self-contained interactive xk6-dashboard report from the same finalized sample stream. It is disabled when omitted. Graph data is aggregated into populated periodic snapshots, including the final partial interval, so the offline time series retains the run's intermediate points. The dashboard graph model represents one configured grouping attribute at a time; Pact runs retain full attribute combinations in the table and JSON reports and emit a diagnostic for combinations that cannot be represented in the graph.
 
 `--combined-output` is optional and writes one self-contained k6-reporter-based document with interactive graphs plus exhaustive local tables for base metrics, arbitrary tag combinations, named and nested groups, checks, threshold definitions and results, and visible graph diagnostics. It does not require `--dashboard-output`; when both are supplied, both artifacts use the same dashboard event payload. The dashboard runs inside an embedded frame so its global styles cannot override the reporter design. External font, icon, favicon, and preconnect resources from the reporter template are removed from the combined artifact so it remains usable offline.
 
@@ -139,8 +142,9 @@ go run '.' run \
 ```
 
 Exporter configuration, flush, export, and shutdown errors are returned by the
-run. Metric attributes retain stable request and Pact dimensions but exclude
-raw URLs, error text, IP addresses, and other unbounded tags. Each run adds the
+run. Metric attributes retain the benchmark's configured stable grouping
+attributes but exclude raw URLs, error text, IP addresses, and other unbounded
+tags. Each run adds the
 same `benchmark.run_id` resource attribute to metrics and traces.
 
 To load Pact interactions, pass the provider base URL with `--pact-provider-url` and a directory containing Pact JSON files with `--pacts-dir`:
