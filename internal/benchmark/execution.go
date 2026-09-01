@@ -115,6 +115,14 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 	if config.BufferPool == nil || config.BuiltinMetrics == nil || config.TestStatus == nil || config.RunTags == nil {
 		return nil, errors.New("create benchmark runner: k6 runtime dependencies are incomplete")
 	}
+	failureBudgets, err := newFailureBudgetTracker(config.Benchmark.Benchmark())
+	if err != nil {
+		return nil, fmt.Errorf("create benchmark runner: %w", err)
+	}
+	responseTimes, err := newResponseTimeTracker(config.Benchmark.Benchmark())
+	if err != nil {
+		return nil, fmt.Errorf("create benchmark runner: %w", err)
+	}
 	return &Runner{
 		logger:             config.Logger,
 		options:            config.Options,
@@ -126,6 +134,8 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 		targetURL:          config.TargetURL,
 		requestTimeout:     config.RequestTimeout,
 		benchmark:          execution,
+		failureBudgets:     failureBudgets,
+		responseTimes:      responseTimes,
 		executionStartedAt: time.Now(),
 		traceProvider:      config.TraceProvider,
 		benchmarkSpan:      config.BenchmarkSpan,
@@ -144,6 +154,8 @@ type Runner struct {
 	targetURL          httpext.URL
 	requestTimeout     time.Duration
 	benchmark          Execution
+	failureBudgets     *failureBudgetTracker
+	responseTimes      *responseTimeTracker
 	executionStartedAt time.Time
 	nextCaseOrdinal    atomic.Uint64
 	traceProvider      *k6oteltrace.Provider
@@ -355,15 +367,19 @@ func (vu *activeNativeVU) RunOnce() error {
 	if requestErr == nil && (response == nil || response.Status == 0) {
 		requestErr = vu.ctx.Err()
 	}
+	var verification *dsl.MatchResult
 	if matchResponse {
-		verification, matchErr := vu.checkResponse(item, response, requestErr)
-		k6oteltrace.RecordVerification(interactionSpan, traceVerification(verification))
+		result, matchErr := vu.checkResponse(item, response, requestErr)
+		verification = &result
+		k6oteltrace.RecordVerification(interactionSpan, traceVerification(result))
 		if matchErr != nil {
+			verification = nil
 			requestErr = errors.Join(requestErr, fmt.Errorf("match execution case %q response: %w", item.Name, matchErr))
 		}
 	} else if requestErr != nil {
 		k6oteltrace.RecordTransportError(interactionSpan, requestErr)
 	}
+	vu.emitDSLChecks(item, response, requestErr, verification)
 	if response != nil {
 		requestTraceAttributes := traceAttributes.Request
 		requestTraceAttributes.ActualStatus = response.Status
@@ -376,6 +392,36 @@ func (vu *activeNativeVU) RunOnce() error {
 
 	iterationEnded := time.Now()
 	return vu.finishIteration(iterationStarted, iterationEnded, requestErr)
+}
+
+func (vu *activeNativeVU) emitDSLChecks(
+	item dsl.Case,
+	response *httpext.Response,
+	requestErr error,
+	verification *dsl.MatchResult,
+) {
+	status := 0
+	if response != nil {
+		status = response.Status
+	}
+	outcomes := vu.runner.failureBudgets.evaluate(item.ID, observedResponse{status: status, requestErr: requestErr, verification: verification})
+	outcomes = append(outcomes, vu.runner.responseTimes.evaluate(item.ID, response)...)
+	if len(outcomes) == 0 {
+		return
+	}
+	at := time.Now()
+	samples := make([]metrics.Sample, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		tagsAndMeta := vu.state.Tags.GetCurrentValues()
+		tagsAndMeta.SetSystemTagOrMetaIfEnabled(vu.state.Options.SystemTags, metrics.TagCheck, outcome.name)
+		value := float64(1)
+		if !outcome.passed {
+			value = 0
+			tagsAndMeta.SetMetadata("failure_budget_breach", outcome.name)
+		}
+		samples = append(samples, newSampleWithMetadata(vu.state.BuiltinMetrics.Checks, tagsAndMeta, at, value))
+	}
+	metrics.PushIfNotDone(vu.ctx, vu.state.Samples, metrics.ConnectedSamples{Time: at, Samples: samples})
 }
 
 func PrepareRequest(targetURL httpext.URL, item dsl.Case) (PreparedRequest, error) {

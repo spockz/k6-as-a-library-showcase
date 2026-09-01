@@ -52,7 +52,8 @@ func InitializeThresholds(
 	options *lib.Options,
 	validated ValidatedBenchmark,
 ) error {
-	for _, threshold := range validated.Benchmark().Thresholds {
+	model := validated.Benchmark()
+	for _, threshold := range model.Thresholds {
 		baseMetric, submetricName, err := splitThresholdMetric(threshold.Metric)
 		if err != nil {
 			return err
@@ -77,6 +78,51 @@ func InitializeThresholds(
 			options.Thresholds = make(map[string]metrics.Thresholds)
 		}
 		options.Thresholds[submetric.Name] = thresholds
+	}
+	for _, envelope := range model.LoadRequirements {
+		for _, constraint := range envelope.Constraints {
+			for _, failure := range constraint.PermittedFailures {
+				name := failureBudgetCheckName(envelope.ID, constraint.ID, failure.ID)
+				submetric, err := builtin.Checks.AddSubmetric("check:" + name)
+				if err != nil {
+					return fmt.Errorf("initialize failure budget %q submetric: %w", failure.ID, err)
+				}
+				thresholds := metrics.NewThresholds([]string{"rate==1"})
+				if err := thresholds.Parse(); err != nil {
+					return fmt.Errorf("parse failure budget %q threshold: %w", failure.ID, err)
+				}
+				if err := thresholds.Validate(submetric.Name, registry); err != nil {
+					return fmt.Errorf("validate failure budget %q threshold: %w", failure.ID, err)
+				}
+				submetric.Metric.Thresholds = thresholds
+				if options.Thresholds == nil {
+					options.Thresholds = make(map[string]metrics.Thresholds)
+				}
+				options.Thresholds[submetric.Name] = thresholds
+			}
+		}
+		for index, objective := range envelope.ResponseTimes {
+			if objective.P100 == "" {
+				continue
+			}
+			name := fmt.Sprintf("response time p100: %s/%d/%s", envelope.ID, index+1, objective.StatusCode)
+			submetric, err := builtin.Checks.AddSubmetric("check:" + name)
+			if err != nil {
+				return fmt.Errorf("initialize response-time objective submetric: %w", err)
+			}
+			thresholds := metrics.NewThresholds([]string{"rate==1"})
+			if err := thresholds.Parse(); err != nil {
+				return fmt.Errorf("parse response-time objective threshold: %w", err)
+			}
+			if err := thresholds.Validate(submetric.Name, registry); err != nil {
+				return fmt.Errorf("validate response-time objective threshold: %w", err)
+			}
+			submetric.Metric.Thresholds = thresholds
+			if options.Thresholds == nil {
+				options.Thresholds = make(map[string]metrics.Thresholds)
+			}
+			options.Thresholds[submetric.Name] = thresholds
+		}
 	}
 	return nil
 }
