@@ -128,7 +128,7 @@ func StartInteractionSpan(ctx context.Context, tracer trace.Tracer, name string,
 	if name == "" {
 		name = "interaction"
 	}
-	return startSpan(ctx, tracer, name, interactionAttributeValues(attributes))
+	return startLinkedRootSpan(ctx, tracer, name, interactionAttributeValues(attributes))
 }
 
 func ApplyBenchmarkAttributes(span trace.Span, attributes BenchmarkAttributes) {
@@ -250,6 +250,24 @@ func startSpan(ctx context.Context, tracer trace.Tracer, name string, attributes
 		options = append(options, trace.WithAttributes(attributes...))
 	}
 	return tracer.Start(contextOrBackground(ctx), name, options...)
+}
+
+func startLinkedRootSpan(ctx context.Context, tracer trace.Tracer, name string, attributes []attribute.KeyValue) (context.Context, trace.Span) {
+	if tracer == nil {
+		tracer = noop.NewTracerProvider().Tracer(DefaultTracerName)
+	}
+	ctx = contextOrBackground(ctx)
+	options := []trace.SpanStartOption{
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithNewRoot(),
+	}
+	if linked := trace.SpanContextFromContext(ctx); linked.IsValid() {
+		options = append(options, trace.WithLinks(trace.Link{SpanContext: linked}))
+	}
+	if len(attributes) > 0 {
+		options = append(options, trace.WithAttributes(attributes...))
+	}
+	return tracer.Start(ctx, name, options...)
 }
 
 func benchmarkAttributeValues(attributes BenchmarkAttributes) []attribute.KeyValue {

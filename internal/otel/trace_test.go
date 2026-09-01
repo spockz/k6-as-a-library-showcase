@@ -87,8 +87,11 @@ func TestTransportCreatesHTTPChildAndPropagatesW3CContext(t *testing.T) {
 	if benchmark.Parent.IsValid() {
 		t.Fatal("benchmark span unexpectedly has a parent")
 	}
-	if !interaction.Parent.Equal(benchmark.SpanContext) {
-		t.Fatalf("interaction parent = %v, want %v", interaction.Parent, benchmark.SpanContext)
+	if interaction.Parent.IsValid() {
+		t.Fatalf("interaction unexpectedly has parent %v", interaction.Parent)
+	}
+	if len(interaction.Links) != 1 || !interaction.Links[0].SpanContext.Equal(benchmark.SpanContext) {
+		t.Fatalf("interaction links = %v, want benchmark %v", interaction.Links, benchmark.SpanContext)
 	}
 	if !httpSpan.Parent.Equal(interaction.SpanContext) {
 		t.Fatalf("HTTP parent = %v, want %v", httpSpan.Parent, interaction.SpanContext)
@@ -96,8 +99,11 @@ func TestTransportCreatesHTTPChildAndPropagatesW3CContext(t *testing.T) {
 	if httpSpan.SpanKind != otelemetrytrace.SpanKindClient {
 		t.Fatalf("HTTP span kind = %v, want client", httpSpan.SpanKind)
 	}
-	if benchmark.SpanContext.TraceID() != interaction.SpanContext.TraceID() || interaction.SpanContext.TraceID() != httpSpan.SpanContext.TraceID() {
-		t.Fatal("spans do not share a trace ID")
+	if benchmark.SpanContext.TraceID() == interaction.SpanContext.TraceID() {
+		t.Fatal("interaction unexpectedly shares the benchmark trace ID")
+	}
+	if interaction.SpanContext.TraceID() != httpSpan.SpanContext.TraceID() {
+		t.Fatal("interaction and HTTP spans do not share a trace ID")
 	}
 	if !benchmark.SpanContext.IsSampled() || !interaction.SpanContext.IsSampled() || !httpSpan.SpanContext.IsSampled() {
 		t.Fatal("default parent-based always-on sampler did not sample the trace")

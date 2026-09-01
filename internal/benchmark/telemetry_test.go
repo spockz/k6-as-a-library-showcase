@@ -59,6 +59,7 @@ func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T)
 		newTestTraceInteraction(t, "/teapot", "pact:teapot", http.StatusTeapot),
 		newTestTraceInteraction(t, "/wrong-status", "pact:wrong-status", http.StatusMultipleChoices),
 	}
+	interactions[0].Attributes[pact.AttributeProviderState] = "the provider is ready"
 	execution, err := pactTestExecution(interactions)
 	if err != nil {
 		t.Fatalf("create tracing execution plan: %v", err)
@@ -145,8 +146,24 @@ func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T)
 	passing := spanByName(t, spans, "pact:teapot")
 	failing := spanByName(t, spans, "pact:wrong-status")
 	fixed := spanByName(t, spans, "fixed request")
-	if !passing.Parent.Equal(benchmark.SpanContext) || !failing.Parent.Equal(benchmark.SpanContext) || !fixed.Parent.Equal(benchmark.SpanContext) {
-		t.Fatal("workload spans do not have the benchmark parent")
+	for _, interaction := range []tracetest.SpanStub{passing, failing, fixed} {
+		if interaction.Parent.IsValid() {
+			t.Fatalf("workload span %q unexpectedly has parent %v", interaction.Name, interaction.Parent)
+		}
+		if len(interaction.Links) != 1 || !interaction.Links[0].SpanContext.Equal(benchmark.SpanContext) {
+			t.Fatalf("workload span %q links = %v, want benchmark %v", interaction.Name, interaction.Links, benchmark.SpanContext)
+		}
+		if interaction.SpanContext.TraceID() == benchmark.SpanContext.TraceID() {
+			t.Fatalf("workload span %q unexpectedly shares the benchmark trace ID", interaction.Name)
+		}
+	}
+	if passing.SpanContext.TraceID() == failing.SpanContext.TraceID() ||
+		passing.SpanContext.TraceID() == fixed.SpanContext.TraceID() ||
+		failing.SpanContext.TraceID() == fixed.SpanContext.TraceID() {
+		t.Fatal("workload spans do not have independent trace IDs")
+	}
+	if got, ok := spanAttributeValue(passing, pact.AttributeProviderState); !ok || got != "the provider is ready" {
+		t.Fatalf("provider state = %q, %t, want %q", got, ok, "the provider is ready")
 	}
 	if passing.Status.Code != codes.Ok {
 		t.Fatalf("expected 418 Pact span status = %v, want OK", passing.Status.Code)
