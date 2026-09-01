@@ -17,6 +17,9 @@ go.work.sum
 coverage.*
 *.prof
 
+# Local tool and test scratch space
+/.scratch/
+
 # Generated benchmark artifacts
 /metrics.json
 /report.html

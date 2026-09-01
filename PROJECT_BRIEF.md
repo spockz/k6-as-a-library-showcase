@@ -243,6 +243,8 @@ the k6 CLI or JavaScript runtime.
 
 - Read README.md, this brief, and AGENTS.md before planning or editing.
 - Preserve unrelated user changes in the worktree.
+- Use the repository-local ignored `.scratch/` directory for temporary files,
+  build caches, and tool caches instead of `/tmp` or `/private/tmp`.
 - Prefer public k6 APIs and document unavoidable compatibility code.
 - Keep benchmark configuration and CLI concerns separate from workload
   execution.
