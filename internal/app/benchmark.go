@@ -431,37 +431,32 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) (runEr
 			resultErr = errors.Join(resultErr, err)
 		}
 	}
-	if resultErr != nil {
-		return resultErr
-	}
 	if err := artifact.ValidateHTML(config.htmlFilename); err != nil {
-		return err
+		resultErr = errors.Join(resultErr, err)
 	}
 	if err := artifact.ValidateK6JSON(config.jsonFilename); err != nil {
-		return err
+		resultErr = errors.Join(resultErr, err)
 	}
 	if config.dashboardFilename != "" {
 		if err := artifact.ValidateHTML(config.dashboardFilename); err != nil {
-			return fmt.Errorf("validate dashboard report: %w", err)
-		}
-		if _, err := fmt.Fprintf(stdout, "Dashboard report: %s\n", config.dashboardFilename); err != nil {
-			return fmt.Errorf("write dashboard report path: %w", err)
+			resultErr = errors.Join(resultErr, fmt.Errorf("validate dashboard report: %w", err))
+		} else if _, err := fmt.Fprintf(stdout, "Dashboard report: %s\n", config.dashboardFilename); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("write dashboard report path: %w", err))
 		}
 	}
 	if config.combinedFilename != "" {
 		if err := artifact.ValidateHTML(config.combinedFilename); err != nil {
-			return fmt.Errorf("validate combined report: %w", err)
-		}
-		if _, err := fmt.Fprintf(stdout, "Combined report: %s\n", config.combinedFilename); err != nil {
-			return fmt.Errorf("write combined report path: %w", err)
+			resultErr = errors.Join(resultErr, fmt.Errorf("validate combined report: %w", err))
+		} else if _, err := fmt.Fprintf(stdout, "Combined report: %s\n", config.combinedFilename); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("write combined report path: %w", err))
 		}
 	}
 	if config.benchmarkManifestFilename != "" {
 		if _, err := fmt.Fprintf(stdout, "Benchmark manifest: %s\n", config.benchmarkManifestFilename); err != nil {
-			return fmt.Errorf("write execution plan path: %w", err)
+			resultErr = errors.Join(resultErr, fmt.Errorf("write execution plan path: %w", err))
 		}
 	}
-	return nil
+	return resultErr
 }
 
 func ensureDashboardAddressAvailable(host string, port int) error {

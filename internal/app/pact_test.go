@@ -31,7 +31,7 @@ type pactMetricPointData struct {
 	Metadata map[string]string `json:"metadata"`
 }
 
-func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
+func TestRunPactDirectoryWritesTaggedConsoleAndReportsAndFailsUnmetChecks(t *testing.T) {
 	server := newHTTPBinServer(t)
 	defer server.Close()
 
@@ -49,8 +49,9 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 	config.combinedFilename = filepath.Join(directory, "combined.html")
 	config.benchmarkManifestFilename = filepath.Join(directory, "benchmark-manifest.json")
 	var stdout, stderr bytes.Buffer
-	if err := run(t.Context(), config, &stdout, &stderr); err != nil {
-		t.Fatalf("run Pact workload: %v\n%s", err, stderr.String())
+	runErr := run(t.Context(), config, &stdout, &stderr)
+	if runErr == nil || !strings.Contains(runErr.Error(), `checks failed: check "pact response matches" failed 5 times`) {
+		t.Fatalf("run Pact workload error = %v, want five failed Pact checks\n%s", runErr, stderr.String())
 	}
 	for _, fragment := range []string{
 		"█ THRESHOLDS",

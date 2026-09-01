@@ -202,6 +202,9 @@ func (engine *Engine) Run(ctx context.Context) (RunResult, error) {
 	if runErr == nil && actual != engine.expectedStarts {
 		runErr = fmt.Errorf("execute load plan: completed %d of %d planned operation starts", actual, engine.expectedStarts)
 	}
+	if checkErr := engine.runner.checkFailures.err(); checkErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("checks failed: %w", checkErr))
+	}
 	if budgetErr := engine.runner.failureBudgets.err(); budgetErr != nil {
 		runErr = errors.Join(runErr, fmt.Errorf("failure budget breached: %w", budgetErr))
 	}

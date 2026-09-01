@@ -134,6 +134,7 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 		targetURL:          config.TargetURL,
 		requestTimeout:     config.RequestTimeout,
 		benchmark:          execution,
+		checkFailures:      newCheckFailureTracker(),
 		failureBudgets:     failureBudgets,
 		responseTimes:      responseTimes,
 		executionStartedAt: time.Now(),
@@ -154,6 +155,7 @@ type Runner struct {
 	targetURL          httpext.URL
 	requestTimeout     time.Duration
 	benchmark          Execution
+	checkFailures      *checkFailureTracker
 	failureBudgets     *failureBudgetTracker
 	responseTimes      *responseTimeTracker
 	executionStartedAt time.Time
@@ -592,6 +594,7 @@ func (vu *activeNativeVU) checkResponse(
 	if !result.Matched {
 		value = 0
 	}
+	vu.runner.checkFailures.record(item.Check.Name, result.Matched)
 	metrics.PushIfNotDone(vu.ctx, vu.state.Samples, metrics.ConnectedSamples{
 		Tags: tagsAndMeta.Tags,
 		Time: at,
