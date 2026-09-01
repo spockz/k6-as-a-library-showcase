@@ -64,6 +64,7 @@ func synthesizeBenchmark(config runConfig, targetURL *url.URL, interactions []pa
 			LoadScalingFactor:    config.loadScalingFactor,
 			MaxPlannedOperations: config.maxPlannedOperations,
 			GeneratorMaxVUs:      config.generatorMaxVUs,
+			IterationTimeout:     config.requestTimeout,
 		})
 		if err != nil {
 			return benchmarkpkg.ValidatedBenchmark{}, err

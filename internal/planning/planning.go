@@ -21,6 +21,7 @@ type Options struct {
 	LoadScalingFactor    string
 	MaxPlannedOperations int64
 	GeneratorMaxVUs      int64
+	IterationTimeout     time.Duration
 }
 
 func Explicit(vus, iterations int64, maximumDuration time.Duration) dsl.LoadPlan {
@@ -51,6 +52,9 @@ func MaximumStress(requirements []dsl.LoadEnvelope, options Options) (dsl.LoadPl
 	if options.MaxPlannedOperations <= 0 || options.GeneratorMaxVUs <= 0 {
 		return dsl.LoadPlan{}, fmt.Errorf("plan maximum-stress load: planner safety limits must be positive")
 	}
+	if options.IterationTimeout < iterationDuration {
+		return dsl.LoadPlan{}, fmt.Errorf("plan maximum-stress load: iteration timeout %s must not be shorter than the p100 response-time assumption %s", options.IterationTimeout, iterationDuration)
+	}
 
 	digest, err := requirementDigest(requirements)
 	if err != nil {
@@ -65,7 +69,7 @@ func MaximumStress(requirements []dsl.LoadEnvelope, options Options) (dsl.LoadPl
 	var total int64
 	var horizon time.Duration
 	for _, envelope := range requirements {
-		compiled, envelopeHorizon, err := compileEnvelope(envelope, factor, iterationDuration, options.MaxPlannedOperations-total)
+		compiled, envelopeHorizon, err := compileEnvelope(envelope, factor, iterationDuration, options.IterationTimeout, options.MaxPlannedOperations-total)
 		if err != nil {
 			return dsl.LoadPlan{}, err
 		}
@@ -117,7 +121,7 @@ type scheduledBatch struct {
 	amount int64
 }
 
-func compileEnvelope(envelope dsl.LoadEnvelope, factor *big.Rat, iterationDuration time.Duration, remaining int64) (envelopePlan, time.Duration, error) {
+func compileEnvelope(envelope dsl.LoadEnvelope, factor *big.Rat, iterationDuration, iterationTimeout time.Duration, remaining int64) (envelopePlan, time.Duration, error) {
 	var result envelopePlan
 	var constraints []scaledConstraint
 	var horizon time.Duration
@@ -183,7 +187,7 @@ func compileEnvelope(envelope dsl.LoadEnvelope, factor *big.Rat, iterationDurati
 		remaining -= capacity
 		history = append(history, scheduledBatch{at, capacity})
 		result.phases = append(result.phases, dsl.LoadPhase{
-			Start: duration(at), Duration: duration(iterationDuration), MaxDuration: duration(iterationDuration), ExpectedStarts: capacity,
+			Start: duration(at), Duration: duration(iterationDuration), MaxDuration: duration(iterationTimeout), ExpectedStarts: capacity,
 			Load:      dsl.PlannedLoad{Kind: dsl.PlannedLoadBatch, Iterations: capacity, VUs: capacity},
 			Selection: selection, ConstraintIDs: slices.Clone(ids),
 		})

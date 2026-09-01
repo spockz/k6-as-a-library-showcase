@@ -4,6 +4,7 @@ package planning_test
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"k6-as-a-library/internal/dsl"
 	"k6-as-a-library/internal/planning"
@@ -12,7 +13,7 @@ import (
 func TestMaximumStressCompilesSaturatingBatches(t *testing.T) {
 	plan, err := planning.MaximumStress(requirements(), planning.Options{
 		LoadScalingFactor:    "1",
-		MaxPlannedOperations: 800, GeneratorMaxVUs: 800,
+		MaxPlannedOperations: 800, GeneratorMaxVUs: 800, IterationTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("compile maximum-stress plan: %v", err)
@@ -24,16 +25,25 @@ func TestMaximumStressCompilesSaturatingBatches(t *testing.T) {
 		t.Fatalf("unexpected batch schedule: %#v", plan.Phases)
 	}
 	for _, phase := range plan.Phases {
-		if phase.Load.Kind != dsl.PlannedLoadBatch || phase.Load.Iterations != 400 || phase.Load.VUs != 400 {
+		if phase.Load.Kind != dsl.PlannedLoadBatch || phase.Load.Iterations != 400 || phase.Load.VUs != 400 || phase.Duration != "150ms" || phase.MaxDuration != "1s" {
 			t.Fatalf("unexpected batch: %#v", phase)
 		}
+	}
+}
+
+func TestMaximumStressRejectsIterationTimeoutShorterThanP100(t *testing.T) {
+	_, err := planning.MaximumStress(requirements(), planning.Options{
+		LoadScalingFactor: "1", MaxPlannedOperations: 800, GeneratorMaxVUs: 800, IterationTimeout: 100 * time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "must not be shorter") {
+		t.Fatalf("short iteration timeout error = %v", err)
 	}
 }
 
 func TestMaximumStressScalesAmountsWithoutScalingWindows(t *testing.T) {
 	plan, err := planning.MaximumStress(requirements(), planning.Options{
 		LoadScalingFactor:    "0.1",
-		MaxPlannedOperations: 80, GeneratorMaxVUs: 80,
+		MaxPlannedOperations: 80, GeneratorMaxVUs: 80, IterationTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("compile scaled plan: %v", err)
@@ -49,7 +59,7 @@ func TestMaximumStressScalesAmountsWithoutScalingWindows(t *testing.T) {
 func TestMaximumStressRejectsSafetyLimitExceeded(t *testing.T) {
 	_, err := planning.MaximumStress(requirements(), planning.Options{
 		LoadScalingFactor:    "1",
-		MaxPlannedOperations: 799, GeneratorMaxVUs: 800,
+		MaxPlannedOperations: 799, GeneratorMaxVUs: 800, IterationTimeout: time.Second,
 	})
 	if err == nil || !strings.Contains(err.Error(), "max planned operations") {
 		t.Fatalf("expected operation safety error, got %v", err)

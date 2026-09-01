@@ -815,8 +815,8 @@ func validateMaximumStressPlan(collector *validationCollector, plan LoadPlan, fa
 		}
 		maximum, maximumErr := phase.MaxDuration.Parse()
 		duration, durationErr := phase.Duration.Parse()
-		if maximumErr == nil && durationErr == nil && (maximum != iterationDuration || duration != iterationDuration) {
-			collector.add(phaseContext, "maximum-stress phase duration and maxDuration must equal the iteration duration assumption")
+		if maximumErr == nil && durationErr == nil && (maximum < iterationDuration || duration != iterationDuration) {
+			collector.add(phaseContext, "maximum-stress phase duration must equal the iteration duration assumption and maxDuration must not be shorter")
 		}
 		start, startErr := phase.Start.Parse()
 		if startErr == nil {
