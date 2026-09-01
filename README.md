@@ -49,6 +49,11 @@ Production metric samples use k6's built-in metric objects rather than recreatin
 
 `--benchmark-manifest-output PATH` is optional and disabled by default. When provided, direct or Pact input is synthesized and validated before execution, then the `SynthesizedBenchmark` data is atomically published as a deterministic, versioned JSON `BenchmarkManifest` ending in a newline. Schema version 2 uses source-neutral `attributes`, `metadata`, and `groupBy` fields. Source adapters own their attribute names; `groupBy` only selects which declared attributes split aggregate report series. The manifest also contains request paths, queries, expectations, checks, thresholds, load, segments, provenance, and human-readable descriptions of runtime request generation and response matching. It contains no provider base URL, executable callbacks, or k6 runtime objects. A decoded manifest therefore uses identity request materialization and unconditional response matching until a source adapter rebinds runtime behavior. Round-trip validation occurs before rename, so generation or validation failure leaves an existing destination unchanged.
 
+Pact-owned attributes use the `pact` namespace: `pact.consumer_service`,
+`pact.provider_service`, `pact.endpoint`, `pact.interaction`, and
+`pact.provider_state`. The same names appear in manifests, k6 tags, reports,
+OpenTelemetry metrics, and traces.
+
 `RequestSpec.Materialize` produces an independent request immediately before the HTTP adapter constructs the wire request. `RequestSpec.Match` evaluates an independently owned response snapshot after the request completes. Source adapters bind these operations through Pact-independent function types. A hand-written request with no bound behavior is unchanged by materialization and matches every response.
 
 An empty path disables the artifact, `-` is rejected, and collisions with JSON, HTML, dashboard, or combined output paths are rejected. A successful run prints `Benchmark manifest: PATH`.

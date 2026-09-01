@@ -56,6 +56,10 @@ the k6 CLI or JavaScript runtime.
 - Source adapters attach stable, indexable semantic information to cases and
   segments as DSL attributes. Attribute names and meanings belong to the
   source adapter; the DSL does not define Pact-specific attribute names.
+- The Pact adapter namespaces its attributes as `pact.consumer_service`,
+  `pact.provider_service`, `pact.endpoint`, `pact.interaction`, and
+  `pact.provider_state`. These names remain consistent across manifests, k6
+  tags, reports, OpenTelemetry metrics, and traces.
 - `AttributeSet` provides name-based lookup and deterministic override
   semantics for this extensible data. Source-specific information is not
   modeled as fixed fields on the generic case type.

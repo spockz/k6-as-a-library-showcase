@@ -74,5 +74,10 @@ For each of the TODO items, first verify whether the goal already has been achie
 7. **Refine OpenTelemetry tracing (status: implemented and verified)**:
    * Each interaction is the root span of an independent trace with an OpenTelemetry link to the benchmark span. Its HTTP client span remains a child in the interaction trace.
    * The benchmark span remains open for the complete benchmark run.
-   * Pact interaction root spans emit the source-owned `provider_state` attribute when applicable.
+   * Pact interaction root spans emit the source-owned `pact.provider_state` attribute when applicable.
    * Tests cover independent interaction trace IDs, benchmark links, HTTP parentage, propagation, and provider-state attributes.
+   * Every Pact-owned attribute is namespaced with `pact` globally, including
+     DSL manifests, k6 tags, reports, OpenTelemetry metrics, and traces. The
+     names are
+     `pact.consumer_service`, `pact.provider_service`, `pact.endpoint`,
+     `pact.interaction`, and `pact.provider_state`.
