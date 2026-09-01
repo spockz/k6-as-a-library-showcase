@@ -60,26 +60,6 @@ var validOperators = map[string]bool{
 	"<=": true,
 }
 
-var reservedLabelNames = map[string]bool{
-	"error":             true,
-	"error_code":        true,
-	"expected_response": true,
-	"group":             true,
-	"ip":                true,
-	"iter":              true,
-	"method":            true,
-	"name":              true,
-	"path":              true,
-	"proto":             true,
-	"scenario":          true,
-	"status":            true,
-	"tls_cipher":        true,
-	"tls_version":       true,
-	"url":               true,
-	"vu":                true,
-	"vu_max":            true,
-}
-
 // Validate checks all invariants that can be evaluated without an execution
 // target or a scheduler. Cross-plan references and executor capabilities are
 // checked by internal/benchmark.
@@ -170,7 +150,7 @@ func Validate(p SynthesizedBenchmark) error {
 			thresholdIDs[threshold.ID] = true
 		}
 	}
-	validateReport(&collector, normalized.Report)
+	validateReport(&collector, normalized)
 	for index, source := range normalized.Provenance {
 		validateProvenance(&collector, source, Diagnostic{Field: fmt.Sprintf("provenance[%d]", index)})
 	}
@@ -243,8 +223,8 @@ func validateCase(collector *validationCollector, item Case) {
 		checkContext.Field = "check"
 		validateCheck(collector, *item.Check, checkContext)
 	}
-	validateAttributes(collector, item.Labels, context, true, "labels")
-	validateAttributes(collector, item.Metadata, context, false, "metadata")
+	validateAttributes(collector, item.Attributes, context, "attributes")
+	validateAttributes(collector, item.Metadata, context, "metadata")
 	validateProvenance(collector, item.Source, context)
 }
 
@@ -325,6 +305,24 @@ func validateRequest(collector *validationCollector, request RequestSpec, contex
 	if request.Redirects != RedirectFollow && request.Redirects != RedirectNone {
 		context.Field = "request.redirects"
 		collector.add(context, "unknown redirect policy %q", request.Redirects)
+	}
+	if request.Behavior != nil {
+		validateBehaviorDescriptions(collector, request.Behavior.Materialization, context, "request.behavior.materialization")
+		validateBehaviorDescriptions(collector, request.Behavior.Matching, context, "request.behavior.matching")
+	}
+}
+
+func validateBehaviorDescriptions(collector *validationCollector, values []string, context Diagnostic, field string) {
+	for index, value := range values {
+		if strings.TrimSpace(value) == "" {
+			context.Field = fmt.Sprintf("%s[%d]", field, index)
+			collector.add(context, "behavior description is empty")
+			continue
+		}
+		if err := validateText(value, "behavior description"); err != nil {
+			context.Field = fmt.Sprintf("%s[%d]", field, index)
+			collector.add(context, "%v", err)
+		}
 	}
 }
 
@@ -538,7 +536,7 @@ func validateSegment(collector *validationCollector, segment Segment, context Di
 	}
 	validateStringSet(collector, segment.ActiveChecks, context, "activeChecks")
 	validateStringSet(collector, segment.ActiveThresholds, context, "activeThresholds")
-	validateAttributes(collector, segment.Labels, context, true, "labels")
+	validateAttributes(collector, segment.Attributes, context, "attributes")
 	validateLoadOverride(collector, segment.Load, context)
 }
 
@@ -703,7 +701,7 @@ func validateThreshold(collector *validationCollector, threshold Threshold, cont
 func validateSelector(collector *validationCollector, selector Selector, context Diagnostic, field string) {
 	validateStringSetAt(collector, selector.CaseIDs, context, field+".caseIds")
 	validateStringSetAt(collector, selector.OperationIDs, context, field+".operationIds")
-	validateAttributesAt(collector, selector.Labels, context, false, field+".labels")
+	validateAttributesAt(collector, selector.Attributes, context, field+".attributes")
 }
 
 func validateStringSet(collector *validationCollector, values []string, context Diagnostic, field string) {
@@ -725,11 +723,11 @@ func validateStringSetAt(collector *validationCollector, values []string, contex
 	}
 }
 
-func validateAttributes(collector *validationCollector, values []Attribute, context Diagnostic, labels bool, field string) {
-	validateAttributesAt(collector, values, context, labels, field)
+func validateAttributes(collector *validationCollector, values AttributeSet, context Diagnostic, field string) {
+	validateAttributesAt(collector, values, context, field)
 }
 
-func validateAttributesAt(collector *validationCollector, values []Attribute, context Diagnostic, labels bool, field string) {
+func validateAttributesAt(collector *validationCollector, values AttributeSet, context Diagnostic, field string) {
 	seen := make(map[string]bool, len(values))
 	for index, attribute := range values {
 		attributeContext := context
@@ -742,9 +740,6 @@ func validateAttributesAt(collector *validationCollector, values []Attribute, co
 			collector.addKind(ErrorDuplicate, attributeContext, "duplicate attribute name %q", attribute.Name)
 		}
 		seen[key] = true
-		if labels && reservedLabelNames[key] {
-			collector.add(attributeContext, "label name %q is reserved", attribute.Name)
-		}
 		if err := validateText(attribute.Value, "attribute value"); err != nil {
 			collector.add(attributeContext, "%v", err)
 		}
@@ -762,19 +757,6 @@ func validateProvenance(collector *validationCollector, source Provenance, conte
 			collector.add(context, "provenance kind is required when provenance fields are set")
 		}
 		return
-	}
-	validKinds := map[string]bool{
-		"generated": true,
-		"openapi":   true,
-		"pact":      true,
-		"policy":    true,
-		"segments":  true,
-		"sla":       true,
-		"slo":       true,
-	}
-	if !validKinds[source.Kind] {
-		context.Field = "source.kind"
-		collector.add(context, "unknown provenance kind %q", source.Kind)
 	}
 	fields := []struct {
 		name  string
@@ -794,40 +776,46 @@ func validateProvenance(collector *validationCollector, source Provenance, conte
 	}
 }
 
-func validateReport(collector *validationCollector, report ReportSpec) {
+func validateReport(collector *validationCollector, benchmark SynthesizedBenchmark) {
+	report := benchmark.Report
 	if report.MaxSeriesCardinality < 0 {
 		collector.add(Diagnostic{Field: "report.maxSeriesCardinality"}, "maximum series cardinality must not be negative")
 	}
-	allowed := report.AllowedDimensions
-	if allowed == nil && report.AllowedDimensionsPresence != PresenceNull {
-		allowed = defaultAllowedDimensions()
-	}
-	allowedSet := make(map[string]bool, len(allowed))
-	for index, dimension := range allowed {
-		if err := validateName(dimension, "report dimension"); err != nil {
-			collector.add(Diagnostic{Field: fmt.Sprintf("report.allowedDimensions[%d]", index)}, "%v", err)
-		}
-		key := strings.ToLower(dimension)
-		if allowedSet[key] {
-			collector.addKind(ErrorDuplicate, Diagnostic{Field: "report.allowedDimensions"}, "duplicate allowed report dimension %q", dimension)
-		}
-		allowedSet[key] = true
-	}
-	seen := make(map[string]bool, len(report.SeriesDimensions))
-	for index, dimension := range report.SeriesDimensions {
-		context := Diagnostic{Field: fmt.Sprintf("report.seriesDimensions[%d]", index)}
-		if err := validateName(dimension, "report dimension"); err != nil {
+	available := availableAttributeNames(benchmark)
+	seen := make(map[string]bool, len(report.GroupBy))
+	for index, attributeName := range report.GroupBy {
+		context := Diagnostic{Field: fmt.Sprintf("report.groupBy[%d]", index)}
+		if err := validateName(attributeName, "report grouping attribute"); err != nil {
 			collector.add(context, "%v", err)
 		}
-		key := strings.ToLower(dimension)
+		key := strings.ToLower(attributeName)
 		if seen[key] {
-			collector.addKind(ErrorDuplicate, context, "duplicate report dimension %q", dimension)
+			collector.addKind(ErrorDuplicate, context, "duplicate report grouping attribute %q", attributeName)
 		}
 		seen[key] = true
-		if !allowedSet[key] {
-			collector.add(context, "report dimension %q is not allowlisted", dimension)
+		if !available[key] {
+			collector.add(context, "report grouping attribute %q is not declared by any case or segment", attributeName)
 		}
 	}
+}
+
+func availableAttributeNames(benchmark SynthesizedBenchmark) map[string]bool {
+	result := make(map[string]bool)
+	add := func(attributes AttributeSet) {
+		for _, name := range attributes.Names() {
+			result[strings.ToLower(name)] = true
+		}
+	}
+	for _, item := range benchmark.Cases {
+		add(item.Attributes)
+	}
+	for _, segment := range benchmark.Segments {
+		add(segment.Attributes)
+	}
+	if benchmark.SegmentPolicy.Default != nil {
+		add(benchmark.SegmentPolicy.Default.Attributes)
+	}
+	return result
 }
 
 func validateIdentifier(value, description string) error {

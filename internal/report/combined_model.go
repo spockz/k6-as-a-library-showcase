@@ -7,7 +7,6 @@ import (
 	"strconv"
 
 	"go.k6.io/k6/metrics"
-	"k6-as-a-library/internal/pact"
 )
 
 func combinedTableModelFromOutputs(
@@ -52,7 +51,7 @@ func combinedTableModelFromOutputs(
 	if len(summaryOutput.series) == 0 {
 		return model, nil
 	}
-	model.TagColumns = pact.SummaryTags()
+	model.TagColumns = slices.Clone(summaryOutput.groupBy)
 	for _, key := range slices.Sorted(maps.Keys(summaryOutput.series)) {
 		series := summaryOutput.series[key]
 		suffix := summarySeriesMetricSuffix(series.tags)

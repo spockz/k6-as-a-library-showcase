@@ -194,8 +194,7 @@ func TestValidationChecksReferencesCardinalityAndCapabilities(t *testing.T) {
 
 	cardinality := basePlan()
 	cardinality.Report = dsl.ReportSpec{
-		SeriesDimensions:     []string{dsl.ReportDimensionCaseID},
-		AllowedDimensions:    []string{dsl.ReportDimensionCaseID},
+		GroupBy:              []string{"tenant"},
 		MaxSeriesCardinality: 1,
 	}
 	err = planpkg.ValidateModel(cardinality)
@@ -242,8 +241,7 @@ func TestCardinalityCountsOnlyReachableDefaultSegment(t *testing.T) {
 		},
 	}
 	model.Report = dsl.ReportSpec{
-		SeriesDimensions:     []string{dsl.ReportDimensionCaseID},
-		AllowedDimensions:    []string{dsl.ReportDimensionCaseID},
+		GroupBy:              []string{"tenant"},
 		MaxSeriesCardinality: 1,
 	}
 	if err := planpkg.ValidateModel(model); err != nil {
@@ -252,18 +250,17 @@ func TestCardinalityCountsOnlyReachableDefaultSegment(t *testing.T) {
 
 	segmented := basePlan()
 	segmented.Segments = []dsl.Segment{
-		{ID: "warmup", Start: "0s", End: durationPtr("1s"), Labels: []dsl.Attribute{{Name: "phase", Value: "warmup"}}},
-		{ID: "steady", Start: "1s", Labels: []dsl.Attribute{{Name: "phase", Value: "steady"}}},
+		{ID: "warmup", Start: "0s", End: durationPtr("1s"), Attributes: dsl.AttributeSet{{Name: "phase", Value: "warmup"}}},
+		{ID: "steady", Start: "1s", Attributes: dsl.AttributeSet{{Name: "phase", Value: "steady"}}},
 	}
 	segmented.Report = dsl.ReportSpec{
-		SeriesDimensions:     []string{"phase"},
-		AllowedDimensions:    []string{"phase"},
+		GroupBy:              []string{"phase"},
 		MaxSeriesCardinality: 1,
 	}
 	err := planpkg.ValidateModel(segmented)
 	var cardinalityErr *planpkg.CardinalityError
 	if err == nil || !errors.As(err, &cardinalityErr) || !strings.Contains(err.Error(), "cardinality 2") {
-		t.Fatalf("segment labels were not counted as report dimensions: %T: %v", err, err)
+		t.Fatalf("segment attributes were not counted as report groups: %T: %v", err, err)
 	}
 }
 
@@ -362,12 +359,12 @@ func TestValidatedBenchmarkOwnsAnImmutableClone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("validate plan: %v", err)
 	}
-	input.Cases[0].Labels[0].Value = "mutated input"
+	input.Cases[0].Attributes[0].Value = "mutated input"
 	view := validated.Benchmark()
 	view.Cases[0].Request.Query[0].Value = "mutated view"
-	view.Cases[0].Labels[0].Value = "mutated view"
+	view.Cases[0].Attributes[0].Value = "mutated view"
 	stored := validated.Benchmark()
-	if stored.Cases[0].Request.Query[0].Value != "one" || stored.Cases[0].Labels[0].Value != "consumer" {
+	if stored.Cases[0].Request.Query[0].Value != "one" || stored.Cases[0].Attributes[0].Value != "consumer" {
 		t.Fatalf("validated plan exposed mutable backing storage: %#v", stored.Cases[0])
 	}
 }
@@ -385,9 +382,9 @@ func basePlan() dsl.SynthesizedBenchmark {
 					Method: "GET", Path: "/a", Redirects: dsl.RedirectNone,
 					Query: []dsl.Parameter{{Name: "q", Value: "one"}},
 				},
-				Check:  &dsl.CheckSpec{ID: "check-a", Name: "contract", Enabled: true},
-				Labels: []dsl.Attribute{{Name: "consumer_service", Value: "consumer"}},
-				Source: dsl.Provenance{Kind: "generated", Locator: "example"},
+				Check:      &dsl.CheckSpec{ID: "check-a", Name: "contract", Enabled: true},
+				Attributes: dsl.AttributeSet{{Name: "tenant", Value: "consumer"}},
+				Source:     dsl.Provenance{Kind: "generated", Locator: "example"},
 			},
 			{
 				ID: "case-b", Name: "Case B",

@@ -1,25 +1,15 @@
 // Package dsl keeps target-independent model vocabulary at the generator/executor boundary.
 package dsl
 
+import (
+	"context"
+	"slices"
+	"strings"
+)
+
 const (
 	// CurrentSchemaVersion is the only benchmark manifest schema accepted by this version.
-	CurrentSchemaVersion = 1
-
-	// Built-in report dimensions retained for compatibility with the current
-	// contract workload.
-	ReportDimensionConsumerService = "consumer_service"
-	ReportDimensionProviderService = "provider_service"
-	ReportDimensionEndpoint        = "endpoint"
-	ReportDimensionInteraction     = "pact_interaction"
-	ReportDimensionProviderState   = "provider_state"
-	ReportDimensionName            = "name"
-
-	// Stable dimensions that may be explicitly enabled by a benchmark.
-	ReportDimensionCaseID      = "case_id"
-	ReportDimensionOperationID = "operation_id"
-	ReportDimensionSegmentID   = "segment_id"
-	ReportDimensionMethod      = "method"
-	ReportDimensionPath        = "path"
+	CurrentSchemaVersion = 2
 )
 
 // Presence records whether a JSON field was absent, explicitly null, or held
@@ -60,13 +50,13 @@ type Case struct {
 	Request     RequestSpec          `json:"request"`
 	Expectation *ResponseExpectation `json:"expectation,omitempty"`
 	Check       *CheckSpec           `json:"check,omitempty"`
-	Labels      []Attribute          `json:"labels,omitempty"`
-	Metadata    []Attribute          `json:"metadata,omitempty"`
+	Attributes  AttributeSet         `json:"attributes,omitempty"`
+	Metadata    AttributeSet         `json:"metadata,omitempty"`
 	Source      Provenance           `json:"source"`
 
 	ExpectationPresence Presence `json:"-"`
 	CheckPresence       Presence `json:"-"`
-	LabelsPresence      Presence `json:"-"`
+	AttributesPresence  Presence `json:"-"`
 	MetadataPresence    Presence `json:"-"`
 }
 
@@ -82,22 +72,81 @@ type OperationRef struct {
 // use operation identity terminology.
 type OperationIdentity = OperationRef
 
-// RequestSpec contains only serializable request data. Query entries are
-// ordered so repeated parameter values are retained exactly.
+// RequestSpec combines serializable request data with optional runtime behavior.
+// Query entries are ordered so repeated parameter values are retained exactly.
 type RequestSpec struct {
-	Method    string       `json:"method"`
-	Path      string       `json:"path"`
-	Query     []Parameter  `json:"query,omitempty"`
-	Headers   []Header     `json:"headers,omitempty"`
-	Cookies   []Cookie     `json:"cookies,omitempty"`
-	Body      *Payload     `json:"body,omitempty"`
-	Redirects RedirectMode `json:"redirects"`
+	Method    string               `json:"method"`
+	Path      string               `json:"path"`
+	Query     []Parameter          `json:"query,omitempty"`
+	Headers   []Header             `json:"headers,omitempty"`
+	Cookies   []Cookie             `json:"cookies,omitempty"`
+	Body      *Payload             `json:"body,omitempty"`
+	Redirects RedirectMode         `json:"redirects"`
+	Behavior  *BehaviorDescription `json:"behavior,omitempty"`
 
 	QueryPresence   Presence `json:"-"`
 	HeadersPresence Presence `json:"-"`
 	CookiesPresence Presence `json:"-"`
 	BodyPresence    Presence `json:"-"`
+	runtime         *RequestRuntime
 }
+
+// BehaviorDescription explains runtime-only request generation and response matching.
+type BehaviorDescription struct {
+	Materialization []string `json:"materialization,omitempty"`
+	Matching        []string `json:"matching,omitempty"`
+}
+
+// RequestRuntime binds non-serializable behavior to an otherwise serializable request.
+type RequestRuntime struct {
+	Materialize RequestMaterializer
+	Match       ResponseMatcher
+}
+
+// RequestMaterializer produces the concrete request used for one execution.
+type RequestMaterializer func(context.Context, RequestSpec) (RequestSpec, error)
+
+// ResponseMatcher evaluates one concrete response.
+type ResponseMatcher func(context.Context, *HTTPResponse) (MatchResult, error)
+
+// HTTPResponse is an independently owned, execution-adapter-neutral response snapshot.
+type HTTPResponse struct {
+	StatusCode int
+	Headers    map[string]string
+	Cookies    map[string][]ResponseCookie
+	Body       []byte
+}
+
+// ResponseCookie is one cookie observed on a response.
+type ResponseCookie struct {
+	Name  string
+	Value string
+}
+
+// MatchResult distinguishes a contract mismatch from matcher execution failure.
+type MatchResult struct {
+	Matched          bool
+	Kind             MatchKind
+	ExpectedStatus   int
+	ActualStatus     int
+	MismatchCount    int
+	Mismatch         error
+	MismatchMetadata string
+}
+
+// MatchKind identifies the first failed response condition.
+type MatchKind string
+
+const (
+	MatchNone      MatchKind = "none"
+	MatchStatus    MatchKind = "status"
+	MatchHeader    MatchKind = "header"
+	MatchCookie    MatchKind = "cookie"
+	MatchJSONBody  MatchKind = "json_body"
+	MatchTextBody  MatchKind = "text_body"
+	MatchTransport MatchKind = "transport"
+	MatchUnknown   MatchKind = "unknown"
+)
 
 // Parameter is one query parameter occurrence.
 type Parameter struct {
@@ -206,10 +255,50 @@ type CheckSpec struct {
 	Source  Provenance `json:"source,omitempty"`
 }
 
-// Attribute is an ordered name/value pair used for labels and metadata.
+// Attribute is one named semantic or diagnostic value.
 type Attribute struct {
 	Name  string `json:"name"`
 	Value string `json:"value"`
+}
+
+type AttributeSet []Attribute
+
+func (attributes AttributeSet) Get(name string) (string, bool) {
+	for _, attribute := range attributes {
+		if strings.EqualFold(attribute.Name, name) {
+			return attribute.Value, true
+		}
+	}
+	return "", false
+}
+
+func (attributes AttributeSet) Names() []string {
+	names := make([]string, len(attributes))
+	for index, attribute := range attributes {
+		names[index] = attribute.Name
+	}
+	slices.SortFunc(names, func(left, right string) int {
+		return strings.Compare(strings.ToLower(left), strings.ToLower(right))
+	})
+	return names
+}
+
+func (attributes AttributeSet) WithOverrides(overrides AttributeSet) AttributeSet {
+	result := slices.Clone(attributes)
+	for _, override := range overrides {
+		replaced := false
+		for index := range result {
+			if strings.EqualFold(result[index].Name, override.Name) {
+				result[index] = override
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			result = append(result, override)
+		}
+	}
+	return result
 }
 
 // Provenance records a diagnostics-safe source identity. Raw source
@@ -236,7 +325,7 @@ type Segment struct {
 	Checks           CheckMode     `json:"checks"`
 	ActiveChecks     []string      `json:"activeChecks,omitempty"`
 	ActiveThresholds []string      `json:"activeThresholds,omitempty"`
-	Labels           []Attribute   `json:"labels,omitempty"`
+	Attributes       AttributeSet  `json:"attributes,omitempty"`
 
 	EndPresence Presence `json:"-"`
 }
@@ -295,23 +384,20 @@ type Threshold struct {
 	Source         Provenance `json:"source,omitempty"`
 }
 
-// Selector identifies cases, operations, or labels to which a policy applies.
+// Selector identifies cases, operations, or attributes to which a policy applies.
 // Empty selectors mean the whole benchmark.
 type Selector struct {
-	CaseIDs      []string    `json:"caseIds,omitempty"`
-	OperationIDs []string    `json:"operationIds,omitempty"`
-	Labels       []Attribute `json:"labels,omitempty"`
+	CaseIDs      []string     `json:"caseIds,omitempty"`
+	OperationIDs []string     `json:"operationIds,omitempty"`
+	Attributes   AttributeSet `json:"attributes,omitempty"`
 }
 
-// ReportSpec limits which stable attributes may become report series
-// dimensions. Other labels and metadata remain available for richer outputs.
+// ReportSpec controls which emitted attributes split aggregate report series.
 type ReportSpec struct {
-	SeriesDimensions     []string `json:"seriesDimensions,omitempty"`
-	AllowedDimensions    []string `json:"allowedDimensions,omitempty"`
+	GroupBy              []string `json:"groupBy,omitempty"`
 	MaxSeriesCardinality int      `json:"maxSeriesCardinality,omitempty"`
 
-	SeriesDimensionsPresence  Presence `json:"-"`
-	AllowedDimensionsPresence Presence `json:"-"`
+	GroupByPresence Presence `json:"-"`
 }
 
 type Duration string
@@ -435,35 +521,4 @@ func (p SynthesizedBenchmark) Validate() error {
 // Normalized returns the canonical copy of the benchmark.
 func (p SynthesizedBenchmark) Normalized() SynthesizedBenchmark {
 	return p.Normalize()
-}
-
-func defaultSeriesDimensions() []string {
-	return []string{
-		ReportDimensionConsumerService,
-		ReportDimensionProviderService,
-		ReportDimensionEndpoint,
-		ReportDimensionInteraction,
-		ReportDimensionProviderState,
-		ReportDimensionName,
-	}
-}
-
-func defaultAllowedDimensions() []string {
-	return append(defaultSeriesDimensions(),
-		ReportDimensionOperationID,
-		ReportDimensionMethod,
-		ReportDimensionPath,
-	)
-}
-
-// DefaultReportDimensions returns the compatibility dimension set used when a
-// report does not specify one explicitly.
-func DefaultReportDimensions() []string {
-	return defaultSeriesDimensions()
-}
-
-// DefaultReportDimensionAllowlist returns the built-in safe dimension
-// allowlist. A benchmark may provide a narrower or explicitly extended list.
-func DefaultReportDimensionAllowlist() []string {
-	return defaultAllowedDimensions()
 }

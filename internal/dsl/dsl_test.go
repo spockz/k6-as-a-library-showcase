@@ -6,11 +6,41 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
 	"k6-as-a-library/internal/dsl"
 )
+
+func TestAttributeSetProvidesNamedLookupAndOverrides(t *testing.T) {
+	base := dsl.AttributeSet{
+		{Name: "tenant", Value: "case"},
+		{Name: "empty", Value: ""},
+	}
+	if value, found := base.Get("TENANT"); !found || value != "case" {
+		t.Fatalf("case-insensitive lookup = %q, %t", value, found)
+	}
+	if value, found := base.Get("empty"); !found || value != "" {
+		t.Fatalf("empty attribute lookup = %q, %t", value, found)
+	}
+	if _, found := base.Get("missing"); found {
+		t.Fatal("missing attribute was reported as present")
+	}
+	merged := base.WithOverrides(dsl.AttributeSet{
+		{Name: "TENANT", Value: "segment"},
+		{Name: "phase", Value: "steady"},
+	})
+	if value, _ := merged.Get("tenant"); value != "segment" {
+		t.Fatalf("overridden tenant = %q", value)
+	}
+	if value, _ := base.Get("tenant"); value != "case" {
+		t.Fatalf("override mutated source set: %q", value)
+	}
+	if names := merged.Names(); !slices.Equal(names, []string{"empty", "phase", "TENANT"}) {
+		t.Fatalf("attribute names = %v", names)
+	}
+}
 
 func TestJSONPresenceDistinguishesMissingNullAndEmpty(t *testing.T) {
 	t.Parallel()
@@ -382,10 +412,10 @@ func TestCloneDoesNotShareMutableModelStorage(t *testing.T) {
 	original := testBenchmark()
 	clone := original.Clone()
 	clone.Cases[0].Request.Query[0].Value = "changed"
-	clone.Cases[0].Labels[0].Value = "changed"
+	clone.Cases[0].Attributes[0].Value = "changed"
 	clone.Cases[0].Check.Enabled = false
 	clone.Segments = append(clone.Segments, dsl.Segment{ID: "new"})
-	if original.Cases[0].Request.Query[0].Value == "changed" || original.Cases[0].Labels[0].Value == "changed" || !original.Cases[0].Check.Enabled {
+	if original.Cases[0].Request.Query[0].Value == "changed" || original.Cases[0].Attributes[0].Value == "changed" || !original.Cases[0].Check.Enabled {
 		t.Fatal("clone mutation changed the original plan")
 	}
 	if len(original.Segments) != 1 {
@@ -458,22 +488,19 @@ func TestNormalizationCanonicalizesMatchersAndEnforcesReportAllowlist(t *testing
 	}
 
 	model.Report = dsl.ReportSpec{
-		SeriesDimensions: []string{"unapproved_dimension"},
+		GroupBy: []string{"unapproved_dimension"},
 	}
 	err = dsl.Validate(model)
-	if err == nil || !strings.Contains(err.Error(), "not allowlisted") {
-		t.Fatalf("expected report allowlist error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "not declared by any case or segment") {
+		t.Fatalf("expected unavailable report grouping error, got %v", err)
 	}
 }
 
-func TestReportDimensionPresenceSurvivesJSONRoundTrip(t *testing.T) {
+func TestReportGroupByPresenceSurvivesJSONRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	model := testBenchmark()
-	model.Report = dsl.ReportSpec{
-		SeriesDimensions:  []string{},
-		AllowedDimensions: []string{},
-	}
+	model.Report = dsl.ReportSpec{GroupBy: []string{}}
 	encoded, err := dsl.MarshalBenchmarkManifest(model)
 	if err != nil {
 		t.Fatalf("marshal plan with empty report dimensions: %v", err)
@@ -482,16 +509,12 @@ func TestReportDimensionPresenceSurvivesJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unmarshal plan with empty report dimensions: %v", err)
 	}
-	if decoded.Report.SeriesDimensions == nil || len(decoded.Report.SeriesDimensions) != 0 {
-		t.Fatalf("empty series dimensions became defaults: %#v", decoded.Report.SeriesDimensions)
+	if decoded.Report.GroupBy == nil || len(decoded.Report.GroupBy) != 0 {
+		t.Fatalf("empty report group-by became defaults: %#v", decoded.Report.GroupBy)
 	}
-	if decoded.Report.AllowedDimensions == nil || len(decoded.Report.AllowedDimensions) != 0 {
-		t.Fatalf("empty allowed dimensions were not preserved: %#v", decoded.Report.AllowedDimensions)
-	}
-
 	for _, input := range []string{
-		`{"seriesDimensions":null,"allowedDimensions":null}`,
-		`{"seriesDimensions":[],"allowedDimensions":[]}`,
+		`{"groupBy":null}`,
+		`{"groupBy":[]}`,
 	} {
 		var report dsl.ReportSpec
 		if err := json.Unmarshal([]byte(input), &report); err != nil {
@@ -504,6 +527,21 @@ func TestReportDimensionPresenceSurvivesJSONRoundTrip(t *testing.T) {
 		if string(encoded) != input {
 			t.Fatalf("report presence changed: expected %s, got %s", input, encoded)
 		}
+	}
+}
+
+func TestManifestRejectsVersionOneVocabulary(t *testing.T) {
+	_, err := dsl.UnmarshalBenchmarkManifest([]byte(`{"schemaVersion":1,"cases":[{"labels":[]} ]}`))
+	if err == nil || !strings.Contains(err.Error(), "unsupported schema version 1") {
+		t.Fatalf("version 1 manifest error = %v", err)
+	}
+}
+
+func TestProvenanceKindsAreSourceDefined(t *testing.T) {
+	model := testBenchmark()
+	model.Cases[0].Source.Kind = "custom-contract-format"
+	if err := dsl.Validate(model); err != nil {
+		t.Fatalf("pure DSL rejected a source-defined provenance kind: %v", err)
 	}
 }
 
@@ -563,9 +601,9 @@ func testBenchmark() dsl.SynthesizedBenchmark {
 					Query:   []dsl.Parameter{{Name: "q", Value: "value"}},
 					Headers: []dsl.Header{{Name: "Accept", Values: []string{"application/json"}}},
 				},
-				Check:  &dsl.CheckSpec{ID: "check-a", Name: "response matches", Enabled: true},
-				Labels: []dsl.Attribute{{Name: "consumer_service", Value: "consumer"}},
-				Source: dsl.Provenance{Kind: "generated", Locator: "example"},
+				Check:      &dsl.CheckSpec{ID: "check-a", Name: "response matches", Enabled: true},
+				Attributes: dsl.AttributeSet{{Name: "tenant", Value: "consumer"}},
+				Source:     dsl.Provenance{Kind: "generated", Locator: "example"},
 			},
 			{
 				ID:   "case-b",

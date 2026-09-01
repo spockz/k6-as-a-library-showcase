@@ -155,6 +155,8 @@ func TestOTELMetricsOutputMapsSamplesAndResource(t *testing.T) {
 
 	exporter := &memoryMetricExporter{}
 	output := newMemoryOTELMetricsOutput(config, exporter)
+	output.metricAttributeAllowlist["endpoint"] = struct{}{}
+	output.metricAttributeAllowlist["contract_interaction"] = struct{}{}
 
 	registry := k6metrics.NewRegistry()
 	counter := registry.MustNewMetric("requests", k6metrics.Counter)
@@ -163,9 +165,9 @@ func TestOTELMetricsOutputMapsSamplesAndResource(t *testing.T) {
 	rate := registry.MustNewMetric("success", k6metrics.Rate)
 	tags := registry.RootTagSet().
 		With("method", "GET").
-		With("endpoint", "GET /items?secret=value").
+		With("endpoint", "GET /items").
 		With("name", "https://provider.example/items?id=123").
-		With("pact_interaction", "get items").
+		With("contract_interaction", "get items").
 		With("url", "https://provider.example/items?id=123").
 		With("error", "sensitive error").
 		With("ip", "192.0.2.1").
@@ -223,8 +225,8 @@ func TestOTELMetricsOutputMapsSamplesAndResource(t *testing.T) {
 	if counterMetric.attributes["endpoint"] != "GET /items" || counterMetric.attributes["name"] != "/items" {
 		t.Fatalf("normalized endpoint attributes = %#v", counterMetric.attributes)
 	}
-	if counterMetric.attributes["pact_interaction"] != "get items" {
-		t.Fatalf("Pact attributes = %#v", counterMetric.attributes)
+	if counterMetric.attributes["contract_interaction"] != "get items" {
+		t.Fatalf("configured attributes = %#v", counterMetric.attributes)
 	}
 	gaugeMetric, ok := findMetric("test.current", "gauge")
 	if !ok || gaugeMetric.floatValue != 1024 || gaugeMetric.unit != "By" {

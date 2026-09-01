@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -30,112 +29,6 @@ type pactMetricPointData struct {
 	Value    float64           `json:"value"`
 	Tags     map[string]string `json:"tags"`
 	Metadata map[string]string `json:"metadata"`
-}
-
-func TestNativeVUPactInteractionsUseRequestsTagsAndChecks(t *testing.T) {
-	server := newHTTPBinServer(t)
-	defer server.Close()
-
-	harness := newNativeVUTestHarness(t, server.URL, 0)
-	interactions, err := loadPactDirectory(pactFixtureDirectory())
-	if err != nil {
-		t.Fatalf("load PACT directory: %v", err)
-	}
-	execution, err := synthesizeBenchmark(defaultRunConfig(), &harness.runner.targetURL, interactions)
-	if err != nil {
-		t.Fatalf("create PACT execution plan: %v", err)
-	}
-	harness.runner.benchmark = execution
-	harness.runner.executionStartedAt = time.Now()
-
-	runs := len(interactions) + 1
-	for range runs {
-		if err := harness.vu.RunOnce(); err != nil {
-			t.Fatalf("run PACT interaction: %v", err)
-		}
-	}
-
-	emitted := collectBufferedSamples(harness.out)
-	requestSamples := samplesForMetric(emitted, metrics.HTTPReqsName)
-	if len(requestSamples) != runs {
-		t.Fatalf("expected %d request samples, got %d", runs, len(requestSamples))
-	}
-	checkSamples := samplesForMetric(emitted, metrics.ChecksName)
-	if len(checkSamples) != runs {
-		t.Fatalf("expected %d check samples, got %d", runs, len(checkSamples))
-	}
-	for _, sample := range requestSamples {
-		for _, tag := range []string{pactConsumerTag, pactProviderTag, pactInteractionTag, metrics.TagName.String()} {
-			if _, ok := sample.Tags.Get(tag); !ok {
-				t.Errorf("request sample is missing tag %s", tag)
-			}
-		}
-		endpoint, hasEndpoint := sample.Tags.Get(pactEndpointTag)
-		if !hasEndpoint {
-			t.Error("request sample is missing its endpoint tag")
-			continue
-		}
-		providerState, hasProviderState := sample.Tags.Get(pactProviderStateTag)
-		if endpoint == "GET /status/418" {
-			if !hasProviderState || providerState != "httpbin supports teapot responses" {
-				t.Errorf("teapot request has unexpected provider state %q", providerState)
-			}
-		} else if hasProviderState {
-			t.Errorf("request for %s leaked provider state %q", endpoint, providerState)
-		}
-	}
-	failedChecks := 0
-	for _, sample := range checkSamples {
-		interaction, ok := sample.Tags.Get(pactInteractionTag)
-		if !ok {
-			t.Error("PACT check is missing its interaction tag")
-			continue
-		}
-		if interaction == intentionalPactMismatchInteraction {
-			failedChecks++
-			if sample.Value != 0 {
-				t.Errorf("expected intentional PACT mismatch, got check value %f", sample.Value)
-			}
-			if mismatch := sample.Metadata[pactMismatchMetadata]; !strings.Contains(mismatch, "status: expected 300, got 200") {
-				t.Errorf("intentional PACT mismatch has unexpected metadata %q", mismatch)
-			}
-		} else if sample.Value != 1 {
-			t.Errorf("expected matching PACT check for %q, got %f (%v)", interaction, sample.Value, sample.Metadata)
-		}
-		assertSampleTag(t, sample, metrics.TagCheck.String(), pactResponseCheckName)
-	}
-	if failedChecks != 1 {
-		t.Errorf("expected one intentional failed PACT check, got %d", failedChecks)
-	}
-
-	failedRequests := 0
-	requestFailureSamples := samplesForMetric(emitted, metrics.HTTPReqFailedName)
-	if len(requestFailureSamples) != runs {
-		t.Fatalf("expected %d request-failure samples, got %d", runs, len(requestFailureSamples))
-	}
-	for _, sample := range requestFailureSamples {
-		interaction, ok := sample.Tags.Get(pactInteractionTag)
-		if !ok {
-			t.Error("PACT request-failure sample is missing its interaction tag")
-			continue
-		}
-		if interaction == intentionalPactMismatchInteraction {
-			failedRequests++
-			if sample.Value != 1 {
-				t.Errorf("expected intentional PACT request failure, got %f", sample.Value)
-			}
-		} else if sample.Value != 0 {
-			status, hasStatus := sample.Tags.Get(metrics.TagStatus.String())
-			if !hasStatus {
-				t.Errorf("PACT request %q is missing its status tag", interaction)
-				continue
-			}
-			t.Errorf("expected PACT request %q to have no HTTP failure, got %f (status %s, tags %v)", interaction, sample.Value, status, sample.Tags.Map())
-		}
-	}
-	if failedRequests != 1 {
-		t.Errorf("expected one intentional PACT request failure, got %d", failedRequests)
-	}
 }
 
 func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
@@ -171,7 +64,7 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 		"↳  88% — ✓ 40 / ✗ 5",
 		"consumer_service:httpbin-request-consumer",
 		"consumer_service:httpbin-response-consumer",
-		"provider_service:httpbin,endpoint:GET /status/200,pact_interaction:" + intentionalPactMismatchInteraction + ",name:pact:" + intentionalPactMismatchInteraction,
+		"provider_service:httpbin,endpoint:GET /status/200,pact_interaction:" + intentionalPactMismatchInteraction,
 		"100.00% 5 out of 5",
 		"HTTP",
 		"http_req_duration",
@@ -207,11 +100,11 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create expected Pact target URL: %v", err)
 	}
-	expectedExecution, err := synthesizeBenchmark(config, &targetURL, interactions)
+	expectedExecution, err := synthesizeBenchmark(config, targetURL.GetURL(), interactions)
 	if err != nil {
 		t.Fatalf("create expected Pact execution plan: %v", err)
 	}
-	expectedPlan := expectedExecution.validated.Benchmark()
+	expectedPlan := expectedExecution.Benchmark()
 	plan := assertBenchmarkManifestMatchesExecution(
 		t,
 		config.benchmarkManifestFilename,
@@ -228,8 +121,15 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 		if item.Source.Kind != "pact" || item.Source.Locator == "" || item.Source.Interaction == "" {
 			t.Errorf("Pact execution plan case %d has incomplete provenance: %#v", index, item.Source)
 		}
-		if len(item.Labels) == 0 || item.Check == nil || !item.Check.Enabled {
-			t.Errorf("Pact execution plan case %d is missing labels or an enabled check: %#v", index, item)
+		if len(item.Attributes) == 0 || item.Check == nil || !item.Check.Enabled {
+			t.Errorf("Pact execution plan case %d is missing attributes or an enabled check: %#v", index, item)
+		}
+		if item.Request.Behavior == nil || len(item.Request.Behavior.Matching) == 0 {
+			t.Errorf("Pact execution plan case %d is missing its runtime matching description: %#v", index, item.Request.Behavior)
+		}
+		match, err := item.Request.Match(t.Context(), nil)
+		if err != nil || !match.Matched {
+			t.Errorf("decoded Pact manifest case %d retained executable matching behavior: result=%#v error=%v", index, match, err)
 		}
 	}
 	if len(plan.Thresholds) != 1 || plan.Thresholds[0].ID != "pact-responses-valid" || plan.Thresholds[0].Metric != "checks{"+pactResponseCheckSubmetric+"}" {
@@ -469,41 +369,6 @@ func assertPactFailureInConsoleMetric(t *testing.T, report, metricName, expected
 func newHTTPBinServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(httpbin.New())
-}
-
-func TestNativeVUPactMismatchEmitsFailedCheck(t *testing.T) {
-	harness := newNativeVUTestHarness(t, "http://example.test/headers", 0)
-	interactions, err := loadPactDirectory(pactFixtureDirectory())
-	if err != nil {
-		t.Fatalf("load PACT directory: %v", err)
-	}
-	execution, err := synthesizeBenchmark(defaultRunConfig(), &harness.runner.targetURL, interactions[1:2])
-	if err != nil {
-		t.Fatalf("create PACT execution plan: %v", err)
-	}
-	harness.runner.benchmark = execution
-	harness.runner.executionStartedAt = time.Now()
-	harness.vu.state.Transport = roundTripFunc(func(request *http.Request) (*http.Response, error) {
-		return &http.Response{
-			Status:     "200 OK",
-			StatusCode: http.StatusOK,
-			Proto:      "HTTP/1.1",
-			Header:     http.Header{"Content-Type": {"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(`{"json":{"message":"wrong"}}`)),
-			Request:    request,
-		}, nil
-	})
-
-	if err := harness.vu.RunOnce(); err != nil {
-		t.Fatalf("run mismatching PACT interaction: %v", err)
-	}
-	checkSample := requireSampleForMetric(t, collectBufferedSamples(harness.out), metrics.ChecksName)
-	if checkSample.Value != 0 {
-		t.Fatalf("expected failed PACT check, got %f", checkSample.Value)
-	}
-	if checkSample.Metadata[pactMismatchMetadata] == "" {
-		t.Fatal("failed PACT check is missing mismatch metadata")
-	}
 }
 
 func TestSummaryOutputSplitsPactMetricsByTags(t *testing.T) {

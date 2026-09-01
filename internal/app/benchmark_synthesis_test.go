@@ -5,10 +5,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
 	"go.k6.io/k6/lib/netext/httpext"
+	benchmarkpkg "k6-as-a-library/internal/benchmark"
 	"k6-as-a-library/internal/dsl"
 )
 
@@ -22,19 +24,22 @@ func TestExecutionPlanMapsDirectAndPactSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create direct target: %v", err)
 	}
-	direct, err := synthesizeBenchmark(config, &directTarget, nil)
+	direct, err := synthesizeBenchmark(config, directTarget.GetURL(), nil)
 	if err != nil {
 		t.Fatalf("create direct plan: %v", err)
 	}
-	directModel := direct.validated.Benchmark()
+	directModel := direct.Benchmark()
 	if len(directModel.Cases) != 1 || directModel.Cases[0].Source.Kind != "generated" {
 		t.Fatalf("direct source mapping = %#v", directModel.Cases)
 	}
 	if got := directModel.Cases[0].Request.Query; len(got) != 2 || got[0].Name != "a" || got[1].Name != "z" {
 		t.Fatalf("direct query mapping = %#v", got)
 	}
+	if directModel.Report.GroupBy == nil || len(directModel.Report.GroupBy) != 0 {
+		t.Fatalf("direct report grouping = %#v", directModel.Report)
+	}
 	for ordinal := range 4 {
-		selected, err := direct.validated.SelectAt(0, uint64(ordinal))
+		selected, err := direct.SelectAt(0, uint64(ordinal))
 		if err != nil {
 			t.Fatalf("select direct case %d: %v", ordinal, err)
 		}
@@ -51,16 +56,20 @@ func TestExecutionPlanMapsDirectAndPactSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create Pact target: %v", err)
 	}
-	pact, err := synthesizeBenchmark(config, &pactTarget, interactions)
+	pact, err := synthesizeBenchmark(config, pactTarget.GetURL(), interactions)
 	if err != nil {
 		t.Fatalf("create Pact plan: %v", err)
 	}
-	pactModel := pact.validated.Benchmark()
+	pactModel := pact.Benchmark()
 	if len(pactModel.Cases) != len(interactions) {
 		t.Fatalf("Pact case count = %d, want %d", len(pactModel.Cases), len(interactions))
 	}
 	if len(pactModel.Thresholds) != 1 || pactModel.Thresholds[0].Metric != "checks{"+pactResponseCheckSubmetric+"}" {
 		t.Fatalf("Pact thresholds = %#v", pactModel.Thresholds)
+	}
+	wantGroupBy := []string{pactConsumerTag, pactProviderTag, pactEndpointTag, pactInteractionTag, pactProviderStateTag}
+	if !slices.Equal(pactModel.Report.GroupBy, wantGroupBy) {
+		t.Fatalf("Pact report grouping = %v, want %v", pactModel.Report.GroupBy, wantGroupBy)
 	}
 	for index, item := range pactModel.Cases {
 		if item.Source.Kind != "pact" || item.Source.Locator == "" || item.Source.Interaction == "" {
@@ -69,9 +78,12 @@ func TestExecutionPlanMapsDirectAndPactSources(t *testing.T) {
 		if item.Check == nil || !item.Check.Enabled {
 			t.Errorf("Pact case %d has no enabled response check", index)
 		}
+		if item.Request.Behavior == nil || len(item.Request.Behavior.Matching) == 0 {
+			t.Errorf("Pact case %d has no response matching description", index)
+		}
 	}
 	for ordinal := range len(pactModel.Cases) * 2 {
-		selected, err := pact.validated.SelectAt(0, uint64(ordinal))
+		selected, err := pact.SelectAt(0, uint64(ordinal))
 		if err != nil {
 			t.Fatalf("select Pact case %d: %v", ordinal, err)
 		}
@@ -94,12 +106,12 @@ func TestExecutionPlanRequestAdapterPreservesPactRequest(t *testing.T) {
 		t.Fatalf("create target: %v", err)
 	}
 	config := defaultRunConfig()
-	execution, err := synthesizeBenchmark(config, &target, interactions)
+	execution, err := synthesizeBenchmark(config, target.GetURL(), interactions)
 	if err != nil {
 		t.Fatalf("create Pact plan: %v", err)
 	}
 	var post dsl.Case
-	for _, item := range execution.validated.Benchmark().Cases {
+	for _, item := range execution.Benchmark().Cases {
 		if item.Operation.Method == http.MethodPost {
 			post = item
 			break
@@ -108,8 +120,7 @@ func TestExecutionPlanRequestAdapterPreservesPactRequest(t *testing.T) {
 	if post.ID == "" {
 		t.Fatal("POST Pact case was not mapped")
 	}
-	runner := &nativeRunner{targetURL: target}
-	prepared, err := runner.prepareCaseRequest(post)
+	prepared, err := benchmarkpkg.PrepareRequest(target, false, post)
 	if err != nil {
 		t.Fatalf("prepare plan request: %v", err)
 	}
@@ -138,12 +149,11 @@ func TestExecutionPlanRequestAdapterPreservesDirectRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create target: %v", err)
 	}
-	execution, err := synthesizeBenchmark(defaultRunConfig(), &target, nil)
+	execution, err := synthesizeBenchmark(defaultRunConfig(), target.GetURL(), nil)
 	if err != nil {
 		t.Fatalf("create direct plan: %v", err)
 	}
-	runner := &nativeRunner{targetURL: target}
-	prepared, err := runner.prepareCaseRequest(execution.validated.Benchmark().Cases[0])
+	prepared, err := benchmarkpkg.PrepareRequest(target, true, execution.Benchmark().Cases[0])
 	if err != nil {
 		t.Fatalf("prepare direct request: %v", err)
 	}
@@ -184,7 +194,7 @@ func TestPactRequestUsesConfiguredProviderDespiteHostHeader(t *testing.T) {
 		},
 		Source: dsl.Provenance{Kind: "pact"},
 	}
-	prepared, err := (&nativeRunner{targetURL: target}).prepareCaseRequest(item)
+	prepared, err := benchmarkpkg.PrepareRequest(target, false, item)
 	if err != nil {
 		t.Fatalf("prepare Pact request: %v", err)
 	}
@@ -212,7 +222,7 @@ func TestExecutionPlanRejectsInvalidSourceBeforeExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create target: %v", err)
 	}
-	_, err = synthesizeBenchmark(config, &target, nil)
+	_, err = synthesizeBenchmark(config, target.GetURL(), nil)
 	if err == nil || !strings.Contains(err.Error(), "shared-iteration load requires positive VUs and iterations") {
 		t.Fatalf("invalid source was not rejected before execution: %v", err)
 	}

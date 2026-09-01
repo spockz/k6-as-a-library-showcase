@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"k6-as-a-library/internal/otel"
+	benchmarkpkg "k6-as-a-library/internal/benchmark"
 )
 
 func TestRunCommandHelpListsConfigurationFlags(t *testing.T) {
@@ -58,8 +58,8 @@ func TestDashboardIsDisabledByDefault(t *testing.T) {
 	if len(config.outputs) != 0 {
 		t.Fatalf("outputs are enabled by default: %#v", config.outputs)
 	}
-	if config.tracesOutput != otel.DefaultTracesOutput {
-		t.Fatalf("traces output = %q, want %q by default", config.tracesOutput, otel.DefaultTracesOutput)
+	if config.tracesOutput != benchmarkpkg.DefaultTraceOutput {
+		t.Fatalf("traces output = %q, want %q by default", config.tracesOutput, benchmarkpkg.DefaultTraceOutput)
 	}
 	if config.combinedFilename != "" {
 		t.Fatalf("combined output = %q, want disabled by default", config.combinedFilename)
@@ -155,13 +155,13 @@ func TestRunConfigAcceptsEmptyOptionalOutputPaths(t *testing.T) {
 
 func TestRunCommandAcceptsRepeatedOpenTelemetryOutput(t *testing.T) {
 	command := newRunCommand()
-	if err := command.Flags().Set("out", otel.OutputName); err != nil {
+	if err := command.Flags().Set("out", benchmarkpkg.TelemetryOutputName); err != nil {
 		t.Fatalf("set OpenTelemetry output: %v", err)
 	}
-	if err := command.Flags().Set("out", otel.OutputName); err != nil {
+	if err := command.Flags().Set("out", benchmarkpkg.TelemetryOutputName); err != nil {
 		t.Fatalf("set duplicate OpenTelemetry output: %v", err)
 	}
-	if got := command.Flags().Lookup("out").Value.String(); got != otel.OutputName {
+	if got := command.Flags().Lookup("out").Value.String(); got != benchmarkpkg.TelemetryOutputName {
 		t.Fatalf("--out value = %q, want one OpenTelemetry output", got)
 	}
 }

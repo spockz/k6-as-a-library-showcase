@@ -20,11 +20,11 @@ func TestWriteBenchmarkManifestPublishesCanonicalValidatedBenchmark(t *testing.T
 	if err != nil {
 		t.Fatalf("create target URL: %v", err)
 	}
-	execution, err := synthesizeBenchmark(defaultRunConfig(), &target, nil)
+	execution, err := synthesizeBenchmark(defaultRunConfig(), target.GetURL(), nil)
 	if err != nil {
 		t.Fatalf("synthesize benchmark: %v", err)
 	}
-	benchmark := execution.validated.Benchmark()
+	benchmark := execution.Benchmark()
 	benchmark.Cases[0].Request.Headers = []dsl.Header{}
 	benchmark.Cases[0].Request.HeadersPresence = dsl.PresenceValue
 	filename := filepath.Join(t.TempDir(), "benchmark-manifest.json")

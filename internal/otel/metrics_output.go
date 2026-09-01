@@ -37,18 +37,13 @@ const (
 	metricValueKindInt64              = "int64"
 )
 
-var otelMetricAttributeAllowlist = map[string]struct{}{
+var standardMetricAttributeAllowlist = map[string]struct{}{
 	"check":             {},
-	"consumer_service":  {},
 	"condition":         {},
-	"endpoint":          {},
 	"expected_response": {},
 	"group":             {},
 	"method":            {},
 	"name":              {},
-	"pact_interaction":  {},
-	"provider_service":  {},
-	"provider_state":    {},
 	"proto":             {},
 	"scenario":          {},
 	"status":            {},
@@ -69,9 +64,10 @@ type otelMetricsOutput struct {
 	config otelMetricsConfig
 	logger logrus.FieldLogger
 
-	exporterFactory      otelMetricExporterFactory
-	meterProviderFactory otelMeterProviderFactory
-	operationTimeout     time.Duration
+	exporterFactory          otelMetricExporterFactory
+	meterProviderFactory     otelMeterProviderFactory
+	operationTimeout         time.Duration
+	metricAttributeAllowlist map[string]struct{}
 
 	lifecycleMu     sync.Mutex
 	lifecycle       otelOutputLifecycle
@@ -93,12 +89,22 @@ const (
 var _ output.WithStopWithTestError = new(otelMetricsOutput)
 
 func NewMetricsOutputWithRunID(params output.Params, runID string) (*otelMetricsOutput, error) {
+	return NewMetricsOutputWithRunIDAndAttributes(params, runID, nil)
+}
+
+func NewMetricsOutputWithRunIDAndAttributes(params output.Params, runID string, attributeNames []string) (*otelMetricsOutput, error) {
 	config, err := consolidatedOTELMetricsConfig(params.JSONConfig, params.Environment)
 	if err != nil {
 		return nil, err
 	}
 	config.RunID = runID
-	return newOTELMetricsOutputWithConfig(config, params.Logger), nil
+	result := newOTELMetricsOutputWithConfig(config, params.Logger)
+	for _, name := range attributeNames {
+		if name != "" {
+			result.metricAttributeAllowlist[name] = struct{}{}
+		}
+	}
+	return result, nil
 }
 
 func newOTELMetricsOutputWithRunID(params output.Params, runID string) (*otelMetricsOutput, error) {
@@ -110,11 +116,12 @@ func newOTELMetricsOutputWithConfig(config otelMetricsConfig, logger logrus.Fiel
 		logger = logrus.New()
 	}
 	return &otelMetricsOutput{
-		config:               config,
-		logger:               logger,
-		exporterFactory:      newOTELMetricExporter,
-		meterProviderFactory: newOTELMeterProvider,
-		operationTimeout:     defaultOTELOperationTimeout,
+		config:                   config,
+		logger:                   logger,
+		exporterFactory:          newOTELMetricExporter,
+		meterProviderFactory:     newOTELMeterProvider,
+		operationTimeout:         defaultOTELOperationTimeout,
+		metricAttributeAllowlist: cloneAttributeAllowlist(standardMetricAttributeAllowlist),
 	}
 }
 
@@ -263,7 +270,7 @@ func (output *otelMetricsOutput) dispatch(sample metrics.Sample) error {
 
 	ctx := context.Background()
 	name := normalizeMetricName(output.config, sample.Metric.Name)
-	attributes := otelmetric.WithAttributeSet(newOTELAttributeSet(sample.Tags))
+	attributes := otelmetric.WithAttributeSet(output.newOTELAttributeSet(sample.Tags))
 
 	switch sample.Metric.Type {
 	case metrics.Counter:
@@ -709,7 +716,7 @@ func normalizeUnit(valueType metrics.ValueType) string {
 	}
 }
 
-func newOTELAttributeSet(tags *metrics.TagSet) attribute.Set {
+func (o *otelMetricsOutput) newOTELAttributeSet(tags *metrics.TagSet) attribute.Set {
 	if tags == nil {
 		return attribute.NewSet()
 	}
@@ -719,7 +726,7 @@ func newOTELAttributeSet(tags *metrics.TagSet) attribute.Set {
 		if key == "" || value == "" {
 			continue
 		}
-		if _, ok := otelMetricAttributeAllowlist[key]; !ok {
+		if _, ok := o.metricAttributeAllowlist[key]; !ok {
 			continue
 		}
 		value, ok := normalizeOTELMetricAttribute(key, value)
@@ -731,7 +738,7 @@ func newOTELAttributeSet(tags *metrics.TagSet) attribute.Set {
 }
 
 func normalizeOTELMetricAttribute(key, value string) (string, bool) {
-	if key == "endpoint" || key == "name" {
+	if key == "name" {
 		value = normalizeOTELMetricEndpoint(value)
 	}
 	value = truncateOTELMetricAttribute(value, maxOTELMetricAttributeValueLength)
@@ -771,7 +778,7 @@ func truncateOTELMetricAttribute(value string, maxLength int) string {
 }
 
 func newOTELAttributeSetForKey(key, value string) attribute.Set {
-	if _, ok := otelMetricAttributeAllowlist[key]; !ok {
+	if _, ok := standardMetricAttributeAllowlist[key]; !ok {
 		return attribute.NewSet()
 	}
 	value, ok := normalizeOTELMetricAttribute(key, value)
@@ -779,4 +786,12 @@ func newOTELAttributeSetForKey(key, value string) attribute.Set {
 		return attribute.NewSet()
 	}
 	return attribute.NewSet(attribute.String(key, value))
+}
+
+func cloneAttributeAllowlist(source map[string]struct{}) map[string]struct{} {
+	result := make(map[string]struct{}, len(source))
+	for name := range source {
+		result[name] = struct{}{}
+	}
+	return result
 }

@@ -23,7 +23,7 @@ func TestSummaryOutputStopPreservesAggregationErrors(t *testing.T) {
 		"",
 		"",
 		lib.Options{SummaryTrendStats: slices.Clone(lib.DefaultSummaryTrendStats)},
-		false,
+		nil,
 	)
 	if err := output.Start(); err != nil {
 		t.Fatalf("start summary output: %v", err)

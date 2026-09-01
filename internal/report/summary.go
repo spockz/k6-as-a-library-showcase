@@ -12,7 +12,6 @@ import (
 
 	"go.k6.io/k6/lib"
 	"go.k6.io/k6/metrics"
-	"k6-as-a-library/internal/pact"
 )
 
 type SummaryOutput struct {
@@ -21,7 +20,7 @@ type SummaryOutput struct {
 	jsonFilename    string
 	options         lib.Options
 	metrics         map[string]*summaryMetricAggregate
-	splitByTags     bool
+	groupBy         []string
 	series          map[string]*summarySeries
 	rootGroup       *lib.Group
 	testRunDuration time.Duration
@@ -54,7 +53,7 @@ func NewSummaryOutput(
 	htmlFilename string,
 	jsonFilename string,
 	options lib.Options,
-	splitByTags bool,
+	groupBy []string,
 ) *SummaryOutput {
 	if writer == nil {
 		writer = io.Discard
@@ -69,7 +68,7 @@ func NewSummaryOutput(
 		jsonFilename: jsonFilename,
 		options:      options,
 		metrics:      make(map[string]*summaryMetricAggregate),
-		splitByTags:  splitByTags,
+		groupBy:      slices.Clone(groupBy),
 		series:       make(map[string]*summarySeries),
 		rootGroup:    rootGroup,
 	}
@@ -84,9 +83,9 @@ func newSummaryOutput(
 	htmlFilename string,
 	jsonFilename string,
 	options lib.Options,
-	splitByTags bool,
+	groupBy []string,
 ) *SummaryOutput {
-	return NewSummaryOutput(writer, htmlFilename, jsonFilename, options, splitByTags)
+	return NewSummaryOutput(writer, htmlFilename, jsonFilename, options, groupBy)
 }
 
 func (o *SummaryOutput) Summary() (Summary, error) {
@@ -113,10 +112,10 @@ func (o *SummaryOutput) AddMetricSamples(containers []metrics.SampleContainer) {
 			o.sampleCount++
 			o.addMetricSample(o.metrics, sample, true)
 			o.addCheck(sample)
-			if sample.Metric == nil || !o.splitByTags || !isSummaryByTagsMetric(sample.Metric.Name) {
+			if sample.Metric == nil || len(o.groupBy) == 0 || !isSummaryByTagsMetric(sample.Metric.Name) {
 				continue
 			}
-			key, tags, err := summarySeriesKey(sample.Tags)
+			key, tags, err := summarySeriesKeyForNames(sample.Tags, o.groupBy)
 			if err != nil {
 				o.recordError(err)
 				continue
@@ -340,10 +339,9 @@ func validateSummaryMetric(metric *metrics.Metric) error {
 	return nil
 }
 
-func summarySeriesKey(tags *metrics.TagSet) (string, []summaryTag, error) {
-	tagNames := pact.SummaryTags()
-	values := make([]summaryTag, len(tagNames))
-	for index, name := range tagNames {
+func summarySeriesKeyForNames(tags *metrics.TagSet, groupBy []string) (string, []summaryTag, error) {
+	values := make([]summaryTag, len(groupBy))
+	for index, name := range groupBy {
 		var value string
 		var present bool
 		if tags != nil {
@@ -358,6 +356,6 @@ func summarySeriesKey(tags *metrics.TagSet) (string, []summaryTag, error) {
 	return string(encoded), values, nil
 }
 
-func SummarySeriesKey(tags *metrics.TagSet) (string, []SummaryTag, error) {
-	return summarySeriesKey(tags)
+func SummarySeriesKey(tags *metrics.TagSet, groupBy []string) (string, []SummaryTag, error) {
+	return summarySeriesKeyForNames(tags, groupBy)
 }

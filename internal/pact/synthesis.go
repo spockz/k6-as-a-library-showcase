@@ -2,6 +2,7 @@ package pact
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -63,23 +64,83 @@ func Case(interaction Interaction, index int) (dsl.Case, error) {
 		Identifier:  firstNonEmpty(interaction.ID, interaction.Key, caseID),
 		Interaction: interaction.Description,
 	}
+	request := dsl.RequestSpec{
+		Method: strings.ToUpper(interaction.Request.Method), Path: path,
+		Query: dsl.ParametersFromQuery(query), Headers: requestHeaders,
+		Cookies: requestCookies, Body: requestBody, Redirects: dsl.RedirectNone,
+	}
+	request = request.WithRuntime(dsl.RequestRuntime{
+		Match: pactResponseMatcher(interaction.Response),
+	}, pactBehaviorDescription(interaction))
 	return dsl.Case{
-		ID:        caseID,
-		Name:      interaction.Name,
-		Operation: dsl.OperationRef{ID: caseID, Method: strings.ToUpper(interaction.Request.Method), Path: path},
-		Request: dsl.RequestSpec{
-			Method: strings.ToUpper(interaction.Request.Method), Path: path,
-			Query: dsl.ParametersFromQuery(query), Headers: requestHeaders,
-			Cookies: requestCookies, Body: requestBody, Redirects: dsl.RedirectNone,
-		},
+		ID:          caseID,
+		Name:        interaction.Name,
+		Operation:   dsl.OperationRef{ID: caseID, Method: strings.ToUpper(interaction.Request.Method), Path: path},
+		Request:     request,
 		Expectation: response,
 		Check: &dsl.CheckSpec{
 			ID: "pact-check:" + caseID, Name: ResponseCheckName, Enabled: true, Source: source,
 		},
-		Labels:   attributes(interaction.Tags),
-		Metadata: caseMetadata(interaction),
-		Source:   source,
+		Attributes: attributes(interaction.Attributes),
+		Metadata:   caseMetadata(interaction),
+		Source:     source,
 	}, nil
+}
+
+func ReportSpec(interactions []Interaction) dsl.ReportSpec {
+	available := make(map[string]bool)
+	for _, interaction := range interactions {
+		for name := range interaction.Attributes {
+			available[name] = true
+		}
+	}
+	candidates := []string{
+		AttributeConsumerService,
+		AttributeProviderService,
+		AttributeEndpoint,
+		AttributeInteraction,
+		AttributeProviderState,
+	}
+	groupBy := make([]string, 0, len(candidates))
+	for _, name := range candidates {
+		if available[name] {
+			groupBy = append(groupBy, name)
+		}
+	}
+	return dsl.ReportSpec{GroupBy: groupBy, GroupByPresence: dsl.PresenceValue}
+}
+
+func Thresholds() []dsl.Threshold {
+	return []dsl.Threshold{{
+		ID:          "pact-responses-valid",
+		Metric:      "checks{check:" + ResponseCheckName + "}",
+		Aggregation: dsl.ThresholdAggregationRate,
+		Operator:    "==",
+		Target:      1,
+		Source:      dsl.Provenance{Kind: "pact", Identifier: "response-matches"},
+	}}
+}
+
+func pactResponseMatcher(expected HTTPResponse) dsl.ResponseMatcher {
+	return func(_ context.Context, actual *dsl.HTTPResponse) (dsl.MatchResult, error) {
+		result := verifyPactResponse(expected, actual)
+		result.MismatchMetadata = MismatchMetadata
+		return result, nil
+	}
+}
+
+func pactBehaviorDescription(interaction Interaction) dsl.BehaviorDescription {
+	matching := []string{fmt.Sprintf("Require response status %d.", interaction.Response.Status)}
+	if len(interaction.Response.Headers) > 0 {
+		matching = append(matching, fmt.Sprintf("Match %d expected response header(s) using applicable Pact rules.", len(interaction.Response.Headers)))
+	}
+	if interaction.Response.Cookies != nil {
+		matching = append(matching, "Match expected response cookies using Pact semantics.")
+	}
+	if interaction.Response.Body != nil {
+		matching = append(matching, fmt.Sprintf("Match the response body using the Pact example and %d compiled rule(s).", len(interaction.Response.rules)))
+	}
+	return dsl.BehaviorDescription{Matching: matching}
 }
 
 func responseExpectation(response HTTPResponse) (*dsl.ResponseExpectation, error) {
@@ -184,22 +245,22 @@ func payload(raw json.RawMessage) (*dsl.Payload, error) {
 	return &dsl.Payload{Encoding: encoding, Content: string(content), ContentPresence: dsl.PresenceValue}, nil
 }
 
-func attributes(values map[string]string) []dsl.Attribute {
+func attributes(values map[string]string) dsl.AttributeSet {
 	keys := slices.Sorted(maps.Keys(values))
-	result := make([]dsl.Attribute, 0, len(keys))
+	result := make(dsl.AttributeSet, 0, len(keys))
 	for _, key := range keys {
 		result = append(result, dsl.Attribute{Name: key, Value: values[key]})
 	}
 	return result
 }
 
-func caseMetadata(interaction Interaction) []dsl.Attribute {
-	metadata := make([]dsl.Attribute, 0, 2)
+func caseMetadata(interaction Interaction) dsl.AttributeSet {
+	metadata := make(dsl.AttributeSet, 0, 2)
 	if interaction.PactFile != "" {
-		metadata = append(metadata, dsl.Attribute{Name: FileMetadata, Value: interaction.PactFile})
+		metadata = append(metadata, dsl.Attribute{Name: pactFileMetadata, Value: interaction.PactFile})
 	}
 	if interaction.Description != "" {
-		metadata = append(metadata, dsl.Attribute{Name: DescriptionMeta, Value: interaction.Description})
+		metadata = append(metadata, dsl.Attribute{Name: pactDescriptionMeta, Value: interaction.Description})
 	}
 	return metadata
 }

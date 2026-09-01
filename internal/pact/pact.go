@@ -19,51 +19,24 @@ import (
 	"strings"
 
 	"github.com/pact-foundation/pact-go/v2/models"
-	"go.k6.io/k6/lib/netext/httpext"
-	"go.k6.io/k6/metrics"
-	k6oteltrace "k6-as-a-library/internal/otel"
+	"k6-as-a-library/internal/dsl"
 )
 
 const (
-	pactConsumerTag       = "consumer_service"
-	pactProviderTag       = "provider_service"
-	pactEndpointTag       = "endpoint"
-	pactInteractionTag    = "pact_interaction"
-	pactProviderStateTag  = "provider_state"
-	pactFileMetadata      = "pact_file"
-	pactDescriptionMeta   = "pact_description"
-	pactMismatchMetadata  = "pact_mismatch"
-	pactResponseCheckName = "pact response matches"
+	AttributeConsumerService = "consumer_service"
+	AttributeProviderService = "provider_service"
+	AttributeEndpoint        = "endpoint"
+	AttributeInteraction     = "pact_interaction"
+	AttributeProviderState   = "provider_state"
+	pactFileMetadata         = "pact_file"
+	pactDescriptionMeta      = "pact_description"
+	pactMismatchMetadata     = "pact_mismatch"
+	pactResponseCheckName    = "pact response matches"
 )
 
 const (
-	ConsumerTag       = pactConsumerTag
-	ProviderTag       = pactProviderTag
-	EndpointTag       = pactEndpointTag
-	InteractionTag    = pactInteractionTag
-	ProviderStateTag  = pactProviderStateTag
-	FileMetadata      = pactFileMetadata
-	DescriptionMeta   = pactDescriptionMeta
 	MismatchMetadata  = pactMismatchMetadata
 	ResponseCheckName = pactResponseCheckName
-)
-
-var (
-	pactRequestTagNames = []string{
-		pactConsumerTag,
-		pactProviderTag,
-		pactEndpointTag,
-		pactInteractionTag,
-		pactProviderStateTag,
-	}
-	pactRequestMetadataNames = []string{
-		pactFileMetadata,
-		pactDescriptionMeta,
-	}
-	pactSummaryTags = append(
-		slices.Clone(pactRequestTagNames),
-		metrics.TagName.String(),
-	)
 )
 
 type pactDocument struct {
@@ -94,9 +67,9 @@ type pactInteraction struct {
 	Response       pactHTTPResponse           `json:"response"`
 	MatchingRules  map[string]json.RawMessage `json:"matchingRules"`
 
-	PactFile string            `json:"-"`
-	Name     string            `json:"-"`
-	Tags     map[string]string `json:"-"`
+	PactFile   string            `json:"-"`
+	Name       string            `json:"-"`
+	Attributes map[string]string `json:"-"`
 }
 
 type pactHTTPRequest struct {
@@ -131,28 +104,8 @@ type Interaction = pactInteraction
 type HTTPRequest = pactHTTPRequest
 type HTTPResponse = pactHTTPResponse
 
-func RequestTagNames() []string {
-	return slices.Clone(pactRequestTagNames)
-}
-
-func RequestMetadataNames() []string {
-	return slices.Clone(pactRequestMetadataNames)
-}
-
-func SummaryTags() []string {
-	return slices.Clone(pactSummaryTags)
-}
-
 func LoadDirectory(directory string) ([]Interaction, error) {
 	return loadPactDirectory(directory)
-}
-
-func JoinPath(basePath, pactPath string) string {
-	return joinPactPath(basePath, pactPath)
-}
-
-func VerifyResponse(expected HTTPResponse, actual *httpext.Response, requestErr error) k6oteltrace.PactVerificationResult {
-	return verifyPactResponse(expected, actual, requestErr)
 }
 
 func loadPactDirectory(directory string) ([]pactInteraction, error) {
@@ -237,7 +190,7 @@ func loadPactFile(filename string) ([]pactInteraction, error) {
 			return nil, fmt.Errorf("name PACT file %q interaction %d: %w", filename, index, err)
 		}
 		interaction.Name = name
-		interaction.Tags = pactInteractionTags(interaction, document.Consumer.Name, document.Provider.Name)
+		interaction.Attributes = pactInteractionAttributes(interaction, document.Consumer.Name, document.Provider.Name)
 		interactions[index] = interaction
 	}
 	return interactions, nil
@@ -302,23 +255,23 @@ func pactInteractionName(interaction pactInteraction) (string, error) {
 	return "pact:" + hex.EncodeToString(digest[:])[:12], nil
 }
 
-func pactInteractionTags(interaction pactInteraction, consumer, provider string) map[string]string {
-	tags := make(map[string]string, 5)
+func pactInteractionAttributes(interaction pactInteraction, consumer, provider string) map[string]string {
+	attributes := make(map[string]string, 5)
 	if consumer != "" {
-		tags[pactConsumerTag] = consumer
+		attributes[AttributeConsumerService] = consumer
 	}
 	if provider != "" {
-		tags[pactProviderTag] = provider
+		attributes[AttributeProviderService] = provider
 	}
-	tags[pactEndpointTag] = strings.ToUpper(interaction.Request.Method) + " " + pactEndpointPath(interaction.Request.Path)
+	attributes[AttributeEndpoint] = strings.ToUpper(interaction.Request.Method) + " " + pactEndpointPath(interaction.Request.Path)
 	if interaction.Description != "" {
-		tags[pactInteractionTag] = interaction.Description
+		attributes[AttributeInteraction] = interaction.Description
 	}
 	providerState := pactProviderStateName(interaction)
 	if providerState != "" {
-		tags[pactProviderStateTag] = providerState
+		attributes[AttributeProviderState] = providerState
 	}
-	return tags
+	return attributes
 }
 
 func pactEndpointPath(path string) string {
@@ -346,19 +299,6 @@ func pactProviderStateName(interaction pactInteraction) string {
 		}
 	}
 	return strings.Join(names, ", ")
-}
-
-func joinPactPath(basePath, pactPath string) string {
-	if pactPath == "" {
-		pactPath = "/"
-	}
-	if basePath == "" || basePath == "/" {
-		if strings.HasPrefix(pactPath, "/") {
-			return pactPath
-		}
-		return "/" + pactPath
-	}
-	return strings.TrimRight(basePath, "/") + "/" + strings.TrimLeft(pactPath, "/")
 }
 
 func pactQueryString(rawQuery json.RawMessage) (string, error) {
@@ -442,49 +382,38 @@ func pactBodyBytes(raw json.RawMessage) ([]byte, error) {
 
 func verifyPactResponse(
 	expected pactHTTPResponse,
-	actual *httpext.Response,
-	requestErr error,
-) k6oteltrace.PactVerificationResult {
-	result := k6oteltrace.PactVerificationResult{
-		Passed:         true,
-		Kind:           k6oteltrace.MismatchNone,
+	actual *dsl.HTTPResponse,
+) dsl.MatchResult {
+	result := dsl.MatchResult{
+		Matched:        true,
+		Kind:           dsl.MatchNone,
 		ExpectedStatus: expected.Status,
 	}
-	if requestErr != nil {
-		result.Passed = false
-		result.Kind = k6oteltrace.MismatchTransport
-		result.Mismatch = requestErr
-		if actual != nil {
-			result.ActualStatus = actual.Status
-		}
-		result.MismatchCount = 1
-		return result
-	}
 	if actual == nil {
-		result.Passed = false
-		result.Kind = k6oteltrace.MismatchUnknown
+		result.Matched = false
+		result.Kind = dsl.MatchUnknown
 		result.Mismatch = errors.New("response was not received")
 		result.MismatchCount = 1
 		return result
 	}
-	result.ActualStatus = actual.Status
+	result.ActualStatus = actual.StatusCode
 
 	type mismatch struct {
-		kind k6oteltrace.MismatchKind
+		kind dsl.MatchKind
 		err  error
 	}
 	var mismatches []mismatch
-	if actual.Status != expected.Status {
+	if actual.StatusCode != expected.Status {
 		mismatches = append(mismatches, mismatch{
-			kind: k6oteltrace.MismatchStatus,
-			err:  fmt.Errorf("status: expected %d, got %d", expected.Status, actual.Status),
+			kind: dsl.MatchStatus,
+			err:  fmt.Errorf("status: expected %d, got %d", expected.Status, actual.StatusCode),
 		})
 	}
 	if err := matchPactHeaders(expected.Headers, actual.Headers, expected.rules); err != nil {
-		mismatches = append(mismatches, mismatch{kind: k6oteltrace.MismatchHeader, err: err})
+		mismatches = append(mismatches, mismatch{kind: dsl.MatchHeader, err: err})
 	}
 	if err := matchPactCookies(expected.Cookies, actual.Cookies); err != nil {
-		mismatches = append(mismatches, mismatch{kind: k6oteltrace.MismatchCookie, err: err})
+		mismatches = append(mismatches, mismatch{kind: dsl.MatchCookie, err: err})
 	}
 	if err := matchPactBody(expected, actual.Body); err != nil {
 		mismatches = append(mismatches, mismatch{kind: pactBodyMismatchKind(expected.Body), err: err})
@@ -492,7 +421,7 @@ func verifyPactResponse(
 	if len(mismatches) == 0 {
 		return result
 	}
-	result.Passed = false
+	result.Matched = false
 	result.Kind = mismatches[0].kind
 	result.MismatchCount = len(mismatches)
 	mismatchErrors := make([]error, len(mismatches))
@@ -503,24 +432,24 @@ func verifyPactResponse(
 	return result
 }
 
-func matchPactResponse(expected pactHTTPResponse, actual *httpext.Response) error {
-	return verifyPactResponse(expected, actual, nil).Mismatch
+func matchPactResponse(expected pactHTTPResponse, actual *dsl.HTTPResponse) error {
+	return verifyPactResponse(expected, actual).Mismatch
 }
 
-func pactBodyMismatchKind(raw json.RawMessage) k6oteltrace.MismatchKind {
+func pactBodyMismatchKind(raw json.RawMessage) dsl.MatchKind {
 	if raw == nil {
-		return k6oteltrace.MismatchUnknown
+		return dsl.MatchUnknown
 	}
 	body, err := pactBodyBytes(raw)
 	if err == nil {
 		if _, err := decodePactJSON(body); err == nil {
-			return k6oteltrace.MismatchJSONBody
+			return dsl.MatchJSONBody
 		}
 	}
-	return k6oteltrace.MismatchTextBody
+	return dsl.MatchTextBody
 }
 
-func matchPactCookies(expectedRaw json.RawMessage, actual map[string][]*httpext.HTTPCookie) error {
+func matchPactCookies(expectedRaw json.RawMessage, actual map[string][]dsl.ResponseCookie) error {
 	trimmed := bytes.TrimSpace(expectedRaw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil
@@ -547,16 +476,13 @@ func matchPactCookies(expectedRaw json.RawMessage, actual map[string][]*httpext.
 		}
 		matched := false
 		for _, actualValue := range actualValues {
-			if actualValue != nil && actualValue.Value == expectedValues[0] {
+			if actualValue.Value == expectedValues[0] {
 				matched = true
 				break
 			}
 		}
 		if !matched {
-			actualValue := ""
-			if actualValues[0] != nil {
-				actualValue = actualValues[0].Value
-			}
+			actualValue := actualValues[0].Value
 			mismatches = append(mismatches, fmt.Errorf("cookie %q: expected %q, got %q", key, expectedValues[0], actualValue))
 		}
 	}

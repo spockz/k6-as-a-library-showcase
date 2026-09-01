@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "example",
   "baseline": {
     "kind": "shared_iterations",
@@ -52,9 +52,9 @@
         "name": "response matches",
         "enabled": true
       },
-      "labels": [
+      "attributes": [
         {
-          "name": "consumer_service",
+          "name": "tenant",
           "value": "consumer"
         }
       ],
@@ -95,14 +95,5 @@
   "segmentPolicy": {
     "gap": "reject"
   },
-  "report": {
-    "seriesDimensions": [
-      "consumer_service",
-      "provider_service",
-      "endpoint",
-      "pact_interaction",
-      "provider_state",
-      "name"
-    ]
-  }
+  "report": {}
 }

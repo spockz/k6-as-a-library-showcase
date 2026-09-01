@@ -69,6 +69,9 @@ func (benchmark *SynthesizedBenchmark) UnmarshalJSON(data []byte) error {
 	if err := decodeJSONField(fields, "schemaVersion", &result.SchemaVersion); err != nil {
 		return err
 	}
+	if result.SchemaVersion != CurrentSchemaVersion {
+		return fmt.Errorf("decode benchmark manifest: unsupported schema version %d", result.SchemaVersion)
+	}
 	if err := decodeJSONField(fields, "id", &result.ID); err != nil {
 		return err
 	}
@@ -111,7 +114,7 @@ func (item Case) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	labels, err := marshalOptionalSlice(item.Labels, item.LabelsPresence)
+	attributes, err := marshalOptionalSlice(item.Attributes, item.AttributesPresence)
 	if err != nil {
 		return nil, err
 	}
@@ -126,13 +129,13 @@ func (item Case) MarshalJSON() ([]byte, error) {
 		Request     RequestSpec      `json:"request"`
 		Expectation *json.RawMessage `json:"expectation,omitempty"`
 		Check       *json.RawMessage `json:"check,omitempty"`
-		Labels      *json.RawMessage `json:"labels,omitempty"`
+		Attributes  *json.RawMessage `json:"attributes,omitempty"`
 		Metadata    *json.RawMessage `json:"metadata,omitempty"`
 		Source      Provenance       `json:"source"`
 	}{
 		ID: item.ID, Name: item.Name, Operation: item.Operation, Request: item.Request,
 		Expectation: rawMessagePointer(expectation), Check: rawMessagePointer(check),
-		Labels: rawMessagePointer(labels), Metadata: rawMessagePointer(metadata),
+		Attributes: rawMessagePointer(attributes), Metadata: rawMessagePointer(metadata),
 		Source: item.Source,
 	})
 }
@@ -143,7 +146,7 @@ func (item *Case) UnmarshalJSON(data []byte) error {
 	}
 	fields, err := decodeObject(data, map[string]bool{
 		"id": true, "name": true, "operation": true, "request": true,
-		"expectation": true, "check": true, "labels": true, "metadata": true, "source": true,
+		"expectation": true, "check": true, "attributes": true, "metadata": true, "source": true,
 	})
 	if err != nil {
 		return err
@@ -173,11 +176,11 @@ func (item *Case) UnmarshalJSON(data []byte) error {
 			return wrapDecodeError("check", err)
 		}
 	}
-	if err := decodeSliceField(fields, "labels", &result.Labels); err != nil {
+	if err := decodeSliceField(fields, "attributes", &result.Attributes); err != nil {
 		return err
 	}
-	if raw, ok := fields["labels"]; ok {
-		result.LabelsPresence = presenceOfJSON(raw)
+	if raw, ok := fields["attributes"]; ok {
+		result.AttributesPresence = presenceOfJSON(raw)
 	}
 	if err := decodeSliceField(fields, "metadata", &result.Metadata); err != nil {
 		return err
@@ -216,17 +219,18 @@ func (request RequestSpec) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(struct {
-		Method    string           `json:"method"`
-		Path      string           `json:"path"`
-		Query     *json.RawMessage `json:"query,omitempty"`
-		Headers   *json.RawMessage `json:"headers,omitempty"`
-		Cookies   *json.RawMessage `json:"cookies,omitempty"`
-		Body      *json.RawMessage `json:"body,omitempty"`
-		Redirects RedirectMode     `json:"redirects"`
+		Method    string               `json:"method"`
+		Path      string               `json:"path"`
+		Query     *json.RawMessage     `json:"query,omitempty"`
+		Headers   *json.RawMessage     `json:"headers,omitempty"`
+		Cookies   *json.RawMessage     `json:"cookies,omitempty"`
+		Body      *json.RawMessage     `json:"body,omitempty"`
+		Redirects RedirectMode         `json:"redirects"`
+		Behavior  *BehaviorDescription `json:"behavior,omitempty"`
 	}{
 		Method: request.Method, Path: request.Path, Query: rawMessagePointer(query),
 		Headers: rawMessagePointer(headers), Cookies: rawMessagePointer(cookies),
-		Body: rawMessagePointer(body), Redirects: request.Redirects,
+		Body: rawMessagePointer(body), Redirects: request.Redirects, Behavior: request.Behavior,
 	})
 }
 
@@ -236,7 +240,7 @@ func (request *RequestSpec) UnmarshalJSON(data []byte) error {
 	}
 	fields, err := decodeObject(data, map[string]bool{
 		"method": true, "path": true, "query": true, "headers": true,
-		"cookies": true, "body": true, "redirects": true,
+		"cookies": true, "body": true, "redirects": true, "behavior": true,
 	})
 	if err != nil {
 		return err
@@ -273,6 +277,9 @@ func (request *RequestSpec) UnmarshalJSON(data []byte) error {
 		}
 	}
 	if err := decodeJSONField(fields, "redirects", &result.Redirects); err != nil {
+		return err
+	}
+	if err := decodeJSONField(fields, "behavior", &result.Behavior); err != nil {
 		return err
 	}
 	if _, ok := fields["query"]; !ok {
@@ -628,11 +635,11 @@ func (segment Segment) MarshalJSON() ([]byte, error) {
 		Checks           CheckMode        `json:"checks"`
 		ActiveChecks     []string         `json:"activeChecks,omitempty"`
 		ActiveThresholds []string         `json:"activeThresholds,omitempty"`
-		Labels           []Attribute      `json:"labels,omitempty"`
+		Attributes       AttributeSet     `json:"attributes,omitempty"`
 	}{
 		ID: segment.ID, Start: segment.Start, End: rawMessagePointer(end), Selection: segment.Selection,
 		Load: rawMessagePointer(load), Checks: segment.Checks, ActiveChecks: segment.ActiveChecks,
-		ActiveThresholds: segment.ActiveThresholds, Labels: segment.Labels,
+		ActiveThresholds: segment.ActiveThresholds, Attributes: segment.Attributes,
 	})
 }
 
@@ -642,7 +649,7 @@ func (segment *Segment) UnmarshalJSON(data []byte) error {
 	}
 	fields, err := decodeObject(data, map[string]bool{
 		"id": true, "start": true, "end": true, "selection": true, "load": true,
-		"checks": true, "activeChecks": true, "activeThresholds": true, "labels": true,
+		"checks": true, "activeChecks": true, "activeThresholds": true, "attributes": true,
 	})
 	if err != nil {
 		return err
@@ -675,7 +682,7 @@ func (segment *Segment) UnmarshalJSON(data []byte) error {
 	if err := decodeSliceField(fields, "activeThresholds", &result.ActiveThresholds); err != nil {
 		return err
 	}
-	if err := decodeSliceField(fields, "labels", &result.Labels); err != nil {
+	if err := decodeSliceField(fields, "attributes", &result.Attributes); err != nil {
 		return err
 	}
 	if _, ok := fields["end"]; !ok {
@@ -837,20 +844,15 @@ func (threshold *Threshold) UnmarshalJSON(data []byte) error {
 }
 
 func (report ReportSpec) MarshalJSON() ([]byte, error) {
-	series, err := marshalOptionalSlice(report.SeriesDimensions, report.SeriesDimensionsPresence)
-	if err != nil {
-		return nil, err
-	}
-	allowed, err := marshalOptionalSlice(report.AllowedDimensions, report.AllowedDimensionsPresence)
+	groupBy, err := marshalOptionalSlice(report.GroupBy, report.GroupByPresence)
 	if err != nil {
 		return nil, err
 	}
 	return json.Marshal(struct {
-		SeriesDimensions     *json.RawMessage `json:"seriesDimensions,omitempty"`
-		AllowedDimensions    *json.RawMessage `json:"allowedDimensions,omitempty"`
+		GroupBy              *json.RawMessage `json:"groupBy,omitempty"`
 		MaxSeriesCardinality int              `json:"maxSeriesCardinality,omitempty"`
 	}{
-		SeriesDimensions: rawMessagePointer(series), AllowedDimensions: rawMessagePointer(allowed),
+		GroupBy:              rawMessagePointer(groupBy),
 		MaxSeriesCardinality: report.MaxSeriesCardinality,
 	})
 }
@@ -860,23 +862,17 @@ func (report *ReportSpec) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("decode report specification into nil receiver")
 	}
 	fields, err := decodeObject(data, map[string]bool{
-		"seriesDimensions": true, "allowedDimensions": true, "maxSeriesCardinality": true,
+		"groupBy": true, "maxSeriesCardinality": true,
 	})
 	if err != nil {
 		return err
 	}
 	var result ReportSpec
-	if err := decodeSliceField(fields, "seriesDimensions", &result.SeriesDimensions); err != nil {
+	if err := decodeSliceField(fields, "groupBy", &result.GroupBy); err != nil {
 		return err
 	}
-	if raw, ok := fields["seriesDimensions"]; ok {
-		result.SeriesDimensionsPresence = presenceOfJSON(raw)
-	}
-	if err := decodeSliceField(fields, "allowedDimensions", &result.AllowedDimensions); err != nil {
-		return err
-	}
-	if raw, ok := fields["allowedDimensions"]; ok {
-		result.AllowedDimensionsPresence = presenceOfJSON(raw)
+	if raw, ok := fields["groupBy"]; ok {
+		result.GroupByPresence = presenceOfJSON(raw)
 	}
 	if err := decodeJSONField(fields, "maxSeriesCardinality", &result.MaxSeriesCardinality); err != nil {
 		return err
@@ -917,7 +913,7 @@ func marshalOptionalValue(value any, present bool) (json.RawMessage, error) {
 	return json.RawMessage(encoded), err
 }
 
-func marshalOptionalSlice[T any](values []T, presence Presence) (json.RawMessage, error) {
+func marshalOptionalSlice[S ~[]E, E any](values S, presence Presence) (json.RawMessage, error) {
 	if values == nil {
 		if presence == PresenceNull {
 			return json.RawMessage("null"), nil
@@ -949,7 +945,7 @@ func presenceOfJSON(raw json.RawMessage) Presence {
 	return PresenceValue
 }
 
-func decodeSliceField[T any](fields map[string]json.RawMessage, name string, target *[]T) error {
+func decodeSliceField[S ~[]E, E any](fields map[string]json.RawMessage, name string, target *S) error {
 	raw, ok := fields[name]
 	if !ok {
 		return nil
@@ -1034,5 +1030,5 @@ func marshalSelector(selector Selector, required bool) (json.RawMessage, error) 
 }
 
 func isZeroSelector(selector Selector) bool {
-	return len(selector.CaseIDs) == 0 && len(selector.OperationIDs) == 0 && len(selector.Labels) == 0
+	return len(selector.CaseIDs) == 0 && len(selector.OperationIDs) == 0 && len(selector.Attributes) == 0
 }

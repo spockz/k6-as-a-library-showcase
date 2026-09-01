@@ -18,6 +18,11 @@ func (item Case) Clone() Case {
 	return cloneCase(item)
 }
 
+// Clone returns an independent copy of a request specification.
+func (request RequestSpec) Clone() RequestSpec {
+	return cloneRequest(request)
+}
+
 // Clone returns an independent copy of a segment.
 func (segment Segment) Clone() Segment {
 	return cloneSegment(segment)
@@ -59,10 +64,10 @@ func (p SynthesizedBenchmark) Normalize() SynthesizedBenchmark {
 		if item.Request.Path == "" {
 			item.Request.Path = item.Operation.Path
 		}
-		item.Labels = normalizeAttributes(item.Labels)
+		item.Attributes = normalizeAttributes(item.Attributes)
 		item.Metadata = normalizeAttributes(item.Metadata)
-		if item.Labels != nil {
-			item.LabelsPresence = PresenceValue
+		if item.Attributes != nil {
+			item.AttributesPresence = PresenceValue
 		}
 		if item.Metadata != nil {
 			item.MetadataPresence = PresenceValue
@@ -161,7 +166,32 @@ func normalizeRequest(request RequestSpec) RequestSpec {
 	if request.Cookies != nil {
 		request.CookiesPresence = PresenceValue
 	}
+	request.Behavior = normalizeBehaviorDescription(request.Behavior)
 	return request
+}
+
+func normalizeBehaviorDescription(description *BehaviorDescription) *BehaviorDescription {
+	result := cloneBehaviorDescription(description)
+	if result == nil {
+		return nil
+	}
+	result.Materialization = normalizeDescriptions(result.Materialization)
+	result.Matching = normalizeDescriptions(result.Matching)
+	if len(result.Materialization) == 0 && len(result.Matching) == 0 {
+		return nil
+	}
+	return result
+}
+
+func normalizeDescriptions(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	result := make([]string, len(values))
+	for index, value := range values {
+		result[index] = strings.TrimSpace(value)
+	}
+	return result
 }
 
 func normalizeHeaders(values []Header) []Header {
@@ -358,7 +388,7 @@ func normalizeSegment(segment Segment) Segment {
 	sort.Strings(result.ActiveChecks)
 	result.ActiveThresholds = cloneStrings(result.ActiveThresholds)
 	sort.Strings(result.ActiveThresholds)
-	result.Labels = normalizeAttributes(result.Labels)
+	result.Attributes = normalizeAttributes(result.Attributes)
 	result.Load = normalizeLoadOverride(result.Load)
 	return result
 }
@@ -420,35 +450,23 @@ func normalizeSelector(selector Selector) Selector {
 	sort.Strings(result.CaseIDs)
 	result.OperationIDs = cloneStrings(result.OperationIDs)
 	sort.Strings(result.OperationIDs)
-	result.Labels = normalizeAttributes(result.Labels)
+	result.Attributes = normalizeAttributes(result.Attributes)
 	return result
 }
 
 func normalizeReport(report ReportSpec) ReportSpec {
 	result := report
-	if result.SeriesDimensions == nil && result.SeriesDimensionsPresence != PresenceNull {
-		result.SeriesDimensions = defaultSeriesDimensions()
-	} else {
-		result.SeriesDimensions = cloneStrings(result.SeriesDimensions)
-		for index := range result.SeriesDimensions {
-			result.SeriesDimensions[index] = strings.TrimSpace(result.SeriesDimensions[index])
-		}
+	result.GroupBy = cloneStrings(result.GroupBy)
+	for index := range result.GroupBy {
+		result.GroupBy[index] = strings.TrimSpace(result.GroupBy[index])
 	}
-	result.AllowedDimensions = cloneStrings(result.AllowedDimensions)
-	for index := range result.AllowedDimensions {
-		result.AllowedDimensions[index] = strings.TrimSpace(result.AllowedDimensions[index])
+	if result.GroupBy != nil {
+		result.GroupByPresence = PresenceValue
 	}
-	if result.SeriesDimensions != nil {
-		result.SeriesDimensionsPresence = PresenceValue
-	}
-	if result.AllowedDimensions != nil {
-		result.AllowedDimensionsPresence = PresenceValue
-	}
-	sort.Strings(result.AllowedDimensions)
 	return result
 }
 
-func normalizeAttributes(values []Attribute) []Attribute {
+func normalizeAttributes(values AttributeSet) AttributeSet {
 	result := cloneAttributes(values)
 	for index := range result {
 		result[index].Name = strings.TrimSpace(result[index].Name)
@@ -507,8 +525,7 @@ func cloneSynthesizedBenchmark(p SynthesizedBenchmark) SynthesizedBenchmark {
 			result.Thresholds[index] = cloneThreshold(item)
 		}
 	}
-	result.Report.SeriesDimensions = cloneStrings(p.Report.SeriesDimensions)
-	result.Report.AllowedDimensions = cloneStrings(p.Report.AllowedDimensions)
+	result.Report.GroupBy = cloneStrings(p.Report.GroupBy)
 	result.SegmentPolicy = cloneSegmentPolicy(p.SegmentPolicy)
 	result.Provenance = cloneProvenances(p.Provenance)
 	return result
@@ -520,7 +537,7 @@ func cloneCase(item Case) Case {
 	result.Request = cloneRequest(item.Request)
 	result.Expectation = cloneExpectation(item.Expectation)
 	result.Check = cloneCheck(item.Check)
-	result.Labels = cloneAttributes(item.Labels)
+	result.Attributes = cloneAttributes(item.Attributes)
 	result.Metadata = cloneAttributes(item.Metadata)
 	result.Source = item.Source
 	return result
@@ -532,7 +549,21 @@ func cloneRequest(request RequestSpec) RequestSpec {
 	result.Headers = cloneHeaders(request.Headers)
 	result.Cookies = cloneCookies(request.Cookies)
 	result.Body = clonePayload(request.Body)
+	result.Behavior = cloneBehaviorDescription(request.Behavior)
+	if request.runtime != nil {
+		result.runtime = &RequestRuntime{Materialize: request.runtime.Materialize, Match: request.runtime.Match}
+	}
 	return result
+}
+
+func cloneBehaviorDescription(description *BehaviorDescription) *BehaviorDescription {
+	if description == nil {
+		return nil
+	}
+	return &BehaviorDescription{
+		Materialization: cloneStrings(description.Materialization),
+		Matching:        cloneStrings(description.Matching),
+	}
 }
 
 func cloneExpectation(expectation *ResponseExpectation) *ResponseExpectation {
@@ -600,7 +631,7 @@ func cloneSegment(segment Segment) Segment {
 	result.Load = cloneLoadOverride(segment.Load)
 	result.ActiveChecks = cloneStrings(segment.ActiveChecks)
 	result.ActiveThresholds = cloneStrings(segment.ActiveThresholds)
-	result.Labels = cloneAttributes(segment.Labels)
+	result.Attributes = cloneAttributes(segment.Attributes)
 	return result
 }
 
@@ -628,7 +659,7 @@ func cloneThreshold(threshold Threshold) Threshold {
 func cloneSelector(selector Selector) Selector {
 	selector.CaseIDs = cloneStrings(selector.CaseIDs)
 	selector.OperationIDs = cloneStrings(selector.OperationIDs)
-	selector.Labels = cloneAttributes(selector.Labels)
+	selector.Attributes = cloneAttributes(selector.Attributes)
 	return selector
 }
 
@@ -738,11 +769,11 @@ func cloneCaseWeights(values []CaseWeight) []CaseWeight {
 	return result
 }
 
-func cloneAttributes(values []Attribute) []Attribute {
+func cloneAttributes(values AttributeSet) AttributeSet {
 	if values == nil {
 		return nil
 	}
-	result := make([]Attribute, len(values))
+	result := make(AttributeSet, len(values))
 	copy(result, values)
 	return result
 }

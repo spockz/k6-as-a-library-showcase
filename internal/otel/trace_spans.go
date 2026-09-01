@@ -1,4 +1,4 @@
-// These span helpers preserve benchmark, Pact, and request context across native HTTP work.
+// These span helpers preserve benchmark, interaction, and request context across native HTTP work.
 package otel
 
 import (
@@ -25,13 +25,6 @@ const (
 	AttributeGlobalVUID    = "k6.vu.global_id"
 	AttributeIteration     = "k6.iteration"
 
-	AttributeConsumerService = "consumer_service"
-	AttributeProviderService = "provider_service"
-	AttributeEndpoint        = "endpoint"
-	AttributePactInteraction = "pact_interaction"
-	AttributeProviderState   = "provider_state"
-	AttributeName            = "name"
-
 	AttributeHTTPMethod       = "http.request.method"
 	AttributeLegacyHTTPMethod = "http.method"
 	AttributeURLScheme        = "url.scheme"
@@ -39,10 +32,10 @@ const (
 	AttributeServerPort       = "server.port"
 	AttributeURLPath          = "url.path"
 	AttributeHTTPStatusCode   = "http.response.status_code"
-	AttributeExpectedStatus   = "pact.expected_status"
+	AttributeExpectedStatus   = "http.response.expected_status_code"
 
-	PactVerificationEvent = "pact.verification"
-	TransportErrorEvent   = "transport.error"
+	VerificationEvent   = "benchmark.verification"
+	TransportErrorEvent = "transport.error"
 )
 
 type BenchmarkAttributes struct {
@@ -55,13 +48,9 @@ type BenchmarkAttributes struct {
 	Iteration   int64
 }
 
-type PactAttributes struct {
-	ConsumerService string
-	ProviderService string
-	Endpoint        string
-	Interaction     string
-	ProviderState   string
-	Name            string
+type StringAttribute struct {
+	Name  string
+	Value string
 }
 
 type RequestAttributes struct {
@@ -74,9 +63,9 @@ type RequestAttributes struct {
 }
 
 type InteractionAttributes struct {
-	Benchmark BenchmarkAttributes
-	Pact      PactAttributes
-	Request   RequestAttributes
+	Benchmark  BenchmarkAttributes
+	Attributes []StringAttribute
+	Request    RequestAttributes
 }
 
 type MismatchKind string
@@ -92,7 +81,7 @@ const (
 	MismatchUnknown   MismatchKind = "unknown"
 )
 
-type PactVerificationResult struct {
+type VerificationResult struct {
 	Passed         bool
 	Kind           MismatchKind
 	Category       MismatchKind
@@ -101,8 +90,6 @@ type PactVerificationResult struct {
 	MismatchCount  int
 	Mismatch       error
 }
-
-type PactVerification = PactVerificationResult
 
 func (provider *Provider) StartBenchmarkSpan(ctx context.Context, attributes BenchmarkAttributes) (context.Context, trace.Span) {
 	if provider == nil {
@@ -116,20 +103,6 @@ func (provider *Provider) StartBenchmarkSpan(ctx context.Context, attributes Ben
 
 func (provider *Provider) StartBenchmark(ctx context.Context, attributes BenchmarkAttributes) (context.Context, trace.Span) {
 	return provider.StartBenchmarkSpan(ctx, attributes)
-}
-
-func (provider *Provider) StartPactInteractionSpan(ctx context.Context, attributes InteractionAttributes) (context.Context, trace.Span) {
-	if provider == nil {
-		return StartPactInteractionSpan(ctx, nil, attributes)
-	}
-	if attributes.Benchmark.RunID == "" {
-		attributes.Benchmark.RunID = provider.config.RunID
-	}
-	return StartPactInteractionSpan(ctx, provider.tracer, attributes)
-}
-
-func (provider *Provider) StartPactInteraction(ctx context.Context, attributes InteractionAttributes) (context.Context, trace.Span) {
-	return provider.StartPactInteractionSpan(ctx, attributes)
 }
 
 func (provider *Provider) StartInteractionSpan(ctx context.Context, name string, attributes InteractionAttributes) (context.Context, trace.Span) {
@@ -150,14 +123,10 @@ func StartBenchmarkSpan(ctx context.Context, tracer trace.Tracer, attributes Ben
 	return startSpan(ctx, tracer, spanName, benchmarkAttributeValues(attributes))
 }
 
-func StartPactInteractionSpan(ctx context.Context, tracer trace.Tracer, attributes InteractionAttributes) (context.Context, trace.Span) {
-	return StartInteractionSpan(ctx, tracer, pactInteractionSpanName(attributes.Pact), attributes)
-}
-
 func StartInteractionSpan(ctx context.Context, tracer trace.Tracer, name string, attributes InteractionAttributes) (context.Context, trace.Span) {
 	name = boundedString(name, MaxSpanNameLength)
 	if name == "" {
-		name = pactInteractionSpanName(attributes.Pact)
+		name = "interaction"
 	}
 	return startSpan(ctx, tracer, name, interactionAttributeValues(attributes))
 }
@@ -172,11 +141,11 @@ func ApplyBenchmarkAttributes(span trace.Span, attributes BenchmarkAttributes) {
 	}
 }
 
-func ApplyPactAttributes(span trace.Span, attributes PactAttributes) {
+func ApplyStringAttributes(span trace.Span, attributes []StringAttribute) {
 	if span == nil {
 		return
 	}
-	values := pactAttributeValues(attributes)
+	values := stringAttributeValues(attributes)
 	if len(values) > 0 {
 		span.SetAttributes(values...)
 	}
@@ -202,7 +171,7 @@ func ApplyInteractionAttributes(span trace.Span, attributes InteractionAttribute
 	}
 }
 
-func RecordPactVerification(span trace.Span, result PactVerificationResult) {
+func RecordVerification(span trace.Span, result VerificationResult) {
 	if span == nil {
 		return
 	}
@@ -218,9 +187,9 @@ func RecordPactVerification(span trace.Span, result PactVerificationResult) {
 	}
 
 	values := []attribute.KeyValue{
-		attribute.Bool("pact.verification.passed", passed),
-		attribute.Bool("pact.mismatch.present", !passed),
-		attribute.String("pact.mismatch.kind", string(kind)),
+		attribute.Bool("benchmark.verification.passed", passed),
+		attribute.Bool("benchmark.mismatch.present", !passed),
+		attribute.String("benchmark.mismatch.kind", string(kind)),
 	}
 	if validHTTPStatus(result.ExpectedStatus) {
 		values = append(values, attribute.Int(AttributeExpectedStatus, result.ExpectedStatus))
@@ -233,23 +202,23 @@ func RecordPactVerification(span trace.Span, result PactVerificationResult) {
 		if count > maxMismatchCount {
 			count = maxMismatchCount
 		}
-		values = append(values, attribute.Int("pact.mismatch.count", count))
+		values = append(values, attribute.Int("benchmark.mismatch.count", count))
 	}
 	span.SetAttributes(values...)
-	span.AddEvent(PactVerificationEvent, trace.WithAttributes(values...))
+	span.AddEvent(VerificationEvent, trace.WithAttributes(values...))
 	if passed {
 		span.SetStatus(codes.Ok, "")
 		return
 	}
 
 	span.RecordError(
-		errors.New("pact contract mismatch"),
+		errors.New("response verification mismatch"),
 		trace.WithAttributes(
-			attribute.String("error.type", "pact.contract_mismatch"),
-			attribute.String("pact.mismatch.kind", string(kind)),
+			attribute.String("error.type", "benchmark.verification_mismatch"),
+			attribute.String("benchmark.mismatch.kind", string(kind)),
 		),
 	)
-	span.SetStatus(codes.Error, "pact contract mismatch")
+	span.SetStatus(codes.Error, "response verification mismatch")
 }
 
 func RecordTransportError(span trace.Span, err error) {
@@ -309,19 +278,15 @@ func benchmarkAttributeValues(attributes BenchmarkAttributes) []attribute.KeyVal
 	return values
 }
 
-func pactAttributeValues(attributes PactAttributes) []attribute.KeyValue {
-	values := make([]attribute.KeyValue, 0, 6)
-	appendString := func(key, value string) {
-		if value = boundedString(value, MaxAttributeValueLength); value != "" {
-			values = append(values, attribute.String(key, value))
+func stringAttributeValues(attributes []StringAttribute) []attribute.KeyValue {
+	values := make([]attribute.KeyValue, 0, len(attributes))
+	for _, item := range attributes {
+		name := boundedString(item.Name, MaxAttributeValueLength)
+		value := boundedString(item.Value, MaxAttributeValueLength)
+		if name != "" && value != "" {
+			values = append(values, attribute.String(name, value))
 		}
 	}
-	appendString(AttributeConsumerService, attributes.ConsumerService)
-	appendString(AttributeProviderService, attributes.ProviderService)
-	appendString(AttributeEndpoint, attributes.Endpoint)
-	appendString(AttributePactInteraction, attributes.Interaction)
-	appendString(AttributeProviderState, attributes.ProviderState)
-	appendString(AttributeName, attributes.Name)
 	return values
 }
 
@@ -361,7 +326,7 @@ func requestAttributeValues(attributes RequestAttributes) []attribute.KeyValue {
 func interactionAttributeValues(attributes InteractionAttributes) []attribute.KeyValue {
 	values := make([]attribute.KeyValue, 0, 20)
 	values = append(values, benchmarkAttributeValues(attributes.Benchmark)...)
-	values = append(values, pactAttributeValues(attributes.Pact)...)
+	values = append(values, stringAttributeValues(attributes.Attributes)...)
 	values = append(values, requestAttributeValues(attributes.Request)...)
 	return values
 }
@@ -411,18 +376,6 @@ func safeRequestParts(attributes RequestAttributes) (scheme, host string, port i
 		}
 	}
 	return scheme, host, port, path
-}
-
-func pactInteractionSpanName(attributes PactAttributes) string {
-	name := attributes.Name
-	if name == "" {
-		name = attributes.Interaction
-	}
-	name = boundedString(name, MaxSpanNameLength)
-	if name == "" {
-		return "pact.interaction"
-	}
-	return name
 }
 
 func normalizeMismatchKind(kind MismatchKind, expected, actual int) MismatchKind {

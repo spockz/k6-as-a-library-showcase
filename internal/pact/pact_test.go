@@ -4,10 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
-	"go.k6.io/k6/lib/netext/httpext"
+	"k6-as-a-library/internal/dsl"
 )
 
 func TestLoadDirectoryLoadsAllInteractions(t *testing.T) {
@@ -43,17 +44,17 @@ func TestLoadDirectoryLoadsAllInteractions(t *testing.T) {
 		if interaction.Name != want.name {
 			t.Errorf("interaction %d name = %q, want %q", index, interaction.Name, want.name)
 		}
-		if interaction.Tags[pactConsumerTag] != want.consumer {
-			t.Errorf("interaction %d consumer = %q, want %q", index, interaction.Tags[pactConsumerTag], want.consumer)
+		if interaction.Attributes[AttributeConsumerService] != want.consumer {
+			t.Errorf("interaction %d consumer = %q, want %q", index, interaction.Attributes[AttributeConsumerService], want.consumer)
 		}
-		if interaction.Tags[pactProviderTag] != want.provider {
-			t.Errorf("interaction %d provider = %q, want %q", index, interaction.Tags[pactProviderTag], want.provider)
+		if interaction.Attributes[AttributeProviderService] != want.provider {
+			t.Errorf("interaction %d provider = %q, want %q", index, interaction.Attributes[AttributeProviderService], want.provider)
 		}
-		if interaction.Tags[pactEndpointTag] != want.endpoint {
-			t.Errorf("interaction %d endpoint = %q, want %q", index, interaction.Tags[pactEndpointTag], want.endpoint)
+		if interaction.Attributes[AttributeEndpoint] != want.endpoint {
+			t.Errorf("interaction %d endpoint = %q, want %q", index, interaction.Attributes[AttributeEndpoint], want.endpoint)
 		}
-		if interaction.Tags[pactProviderStateTag] != want.providerState {
-			t.Errorf("interaction %d provider state = %q, want %q", index, interaction.Tags[pactProviderStateTag], want.providerState)
+		if interaction.Attributes[AttributeProviderState] != want.providerState {
+			t.Errorf("interaction %d provider state = %q, want %q", index, interaction.Attributes[AttributeProviderState], want.providerState)
 		}
 		if interaction.PactFile == "" {
 			t.Errorf("interaction %d is missing its source Pact file", index)
@@ -69,19 +70,19 @@ func TestResponseMatchingChecksStatusHeadersAndBody(t *testing.T) {
 		t.Fatalf("load PACT directory: %v", err)
 	}
 	expected := interactions[1].Response
-	matching := &httpext.Response{
-		Status:  200,
-		Headers: map[string]string{"content-type": "application/json; charset=utf-8"},
-		Body:    []byte(`{"json":{"message":"hello from Pact"},"origin":"127.0.0.1"}`),
+	matching := &dsl.HTTPResponse{
+		StatusCode: 200,
+		Headers:    map[string]string{"content-type": "application/json; charset=utf-8"},
+		Body:       []byte(`{"json":{"message":"hello from Pact"},"origin":"127.0.0.1"}`),
 	}
 	if err := matchPactResponse(expected, matching); err != nil {
 		t.Fatalf("matching PACT response: %v", err)
 	}
 
-	mismatch := &httpext.Response{
-		Status:  201,
-		Headers: map[string]string{"Content-Type": "text/plain"},
-		Body:    []byte(`{"json":{"message":"wrong"}}`),
+	mismatch := &dsl.HTTPResponse{
+		StatusCode: 201,
+		Headers:    map[string]string{"Content-Type": "text/plain"},
+		Body:       []byte(`{"json":{"message":"wrong"}}`),
 	}
 	err = matchPactResponse(expected, mismatch)
 	if err == nil {
@@ -94,6 +95,36 @@ func TestResponseMatchingChecksStatusHeadersAndBody(t *testing.T) {
 	}
 }
 
+func TestReportSpecOwnsPactAttributeVocabulary(t *testing.T) {
+	want := []string{
+		AttributeConsumerService,
+		AttributeProviderService,
+		AttributeEndpoint,
+		AttributeInteraction,
+		AttributeProviderState,
+	}
+	interaction := Interaction{Attributes: make(map[string]string, len(want))}
+	for _, name := range want {
+		interaction.Attributes[name] = "value"
+	}
+	report := ReportSpec([]Interaction{interaction})
+	if !slices.Equal(report.GroupBy, want) {
+		t.Fatalf("Pact report grouping = %#v", report)
+	}
+}
+
+func TestReportSpecOmitsUnavailableOptionalAttributes(t *testing.T) {
+	report := ReportSpec([]Interaction{{Attributes: map[string]string{
+		AttributeConsumerService: "consumer",
+		AttributeProviderService: "provider",
+		AttributeEndpoint:        "GET /items",
+		AttributeInteraction:     "read items",
+	}}})
+	if slices.Contains(report.GroupBy, AttributeProviderState) {
+		t.Fatalf("unavailable provider state is configured for grouping: %v", report.GroupBy)
+	}
+}
+
 func TestResponseMatchingChecksCookies(t *testing.T) {
 	t.Parallel()
 
@@ -101,10 +132,10 @@ func TestResponseMatchingChecksCookies(t *testing.T) {
 		Status:  http.StatusOK,
 		Cookies: json.RawMessage(`{"session":"active"}`),
 	}
-	actual := &httpext.Response{
-		Status: http.StatusOK,
-		Cookies: map[string][]*httpext.HTTPCookie{
-			"session": {&httpext.HTTPCookie{Value: "active"}},
+	actual := &dsl.HTTPResponse{
+		StatusCode: http.StatusOK,
+		Cookies: map[string][]dsl.ResponseCookie{
+			"session": {{Value: "active"}},
 		},
 	}
 	if err := matchPactResponse(expected, actual); err != nil {

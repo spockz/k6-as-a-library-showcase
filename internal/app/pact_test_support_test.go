@@ -7,18 +7,17 @@ import (
 )
 
 const (
-	pactConsumerTag       = pact.ConsumerTag
-	pactProviderTag       = pact.ProviderTag
-	pactEndpointTag       = pact.EndpointTag
-	pactInteractionTag    = pact.InteractionTag
-	pactProviderStateTag  = pact.ProviderStateTag
-	pactMismatchMetadata  = pact.MismatchMetadata
-	pactResponseCheckName = pact.ResponseCheckName
+	pactConsumerTag             = pact.AttributeConsumerService
+	pactProviderTag             = pact.AttributeProviderService
+	pactEndpointTag             = pact.AttributeEndpoint
+	pactInteractionTag          = pact.AttributeInteraction
+	pactProviderStateTag        = pact.AttributeProviderState
+	pactMismatchMetadata        = pact.MismatchMetadata
+	pactResponseCheckName       = pact.ResponseCheckName
+	pactResponsesValidThreshold = "rate==1"
 )
 
-type pactInteraction = pact.Interaction
-type pactHTTPRequest = pact.HTTPRequest
-type pactHTTPResponse = pact.HTTPResponse
+var pactResponseCheckSubmetric = "check:" + pact.ResponseCheckName
 
 func loadPactDirectory(directory string) ([]pact.Interaction, error) {
 	return pact.LoadDirectory(directory)

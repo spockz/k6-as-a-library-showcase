@@ -232,7 +232,7 @@ func validateSelectorReferences(selector dsl.Selector, cases map[string]dsl.Case
 			problems = append(problems, &ReferenceError{Diagnostic: item, Reference: operationID})
 		}
 	}
-	if len(selector.CaseIDs) == 0 && len(selector.OperationIDs) == 0 && len(selector.Labels) == 0 {
+	if len(selector.CaseIDs) == 0 && len(selector.OperationIDs) == 0 && len(selector.Attributes) == 0 {
 		return problems
 	}
 	found := false
@@ -372,8 +372,8 @@ func validateCardinality(input dsl.SynthesizedBenchmark) error {
 	if maximum == 0 {
 		return nil
 	}
-	dimensions := input.Report.SeriesDimensions
-	if len(dimensions) == 0 {
+	groupBy := input.Report.GroupBy
+	if len(groupBy) == 0 {
 		return nil
 	}
 	var segments []dsl.Segment
@@ -393,9 +393,9 @@ func validateCardinality(input dsl.SynthesizedBenchmark) error {
 	for _, segment := range segments {
 		cases := selectedCases(input.Cases, segment.Selection)
 		for _, item := range cases {
-			parts := make([]string, 0, len(dimensions))
-			for _, dimension := range dimensions {
-				parts = append(parts, dimensionValue(item, segment, dimension))
+			parts := make([]string, 0, len(groupBy))
+			for _, attributeName := range groupBy {
+				parts = append(parts, attributeValue(item, segment, attributeName))
 			}
 			series[strings.Join(parts, "\x00")] = struct{}{}
 		}
@@ -404,8 +404,8 @@ func validateCardinality(input dsl.SynthesizedBenchmark) error {
 		return nil
 	}
 	return &CardinalityError{
-		Diagnostic: dsl.Diagnostic{Kind: dsl.ErrorCardinality, PlanID: input.ID, Field: "report.seriesDimensions"},
-		Dimensions: append([]string(nil), dimensions...),
+		Diagnostic: dsl.Diagnostic{Kind: dsl.ErrorCardinality, PlanID: input.ID, Field: "report.groupBy"},
+		GroupBy:    append([]string(nil), groupBy...),
 		Actual:     len(series),
 		Maximum:    maximum,
 	}
@@ -715,45 +715,21 @@ func selectorMatchesCase(selector dsl.Selector, item dsl.Case) bool {
 	if len(selector.OperationIDs) > 0 && !containsString(selector.OperationIDs, item.Operation.ID) {
 		return false
 	}
-	for _, expected := range selector.Labels {
-		found := false
-		for _, actual := range item.Labels {
-			if strings.EqualFold(expected.Name, actual.Name) && expected.Value == actual.Value {
-				found = true
-				break
-			}
-		}
-		if !found {
+	for _, expected := range selector.Attributes {
+		actual, found := item.Attributes.Get(expected.Name)
+		if !found || expected.Value != actual {
 			return false
 		}
 	}
 	return true
 }
 
-func dimensionValue(item dsl.Case, segment dsl.Segment, dimension string) string {
-	switch strings.ToLower(dimension) {
-	case dsl.ReportDimensionCaseID, "case":
-		return item.ID
-	case dsl.ReportDimensionOperationID, "operation":
-		return item.Operation.ID
-	case dsl.ReportDimensionMethod:
-		return item.Operation.Method
-	case dsl.ReportDimensionPath:
-		return item.Operation.Path
-	case dsl.ReportDimensionName:
-		return item.Name
-	case dsl.ReportDimensionSegmentID, "segment":
-		return segment.ID
+func attributeValue(item dsl.Case, segment dsl.Segment, attributeName string) string {
+	if value, ok := segment.Attributes.Get(attributeName); ok {
+		return value
 	}
-	for _, label := range segment.Labels {
-		if strings.EqualFold(label.Name, dimension) {
-			return label.Value
-		}
-	}
-	for _, label := range item.Labels {
-		if strings.EqualFold(label.Name, dimension) {
-			return label.Value
-		}
+	if value, ok := item.Attributes.Get(attributeName); ok {
+		return value
 	}
 	return "<absent>"
 }

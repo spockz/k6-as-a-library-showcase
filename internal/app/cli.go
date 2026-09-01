@@ -3,7 +3,7 @@ package app
 
 import (
 	"github.com/spf13/cobra"
-	"k6-as-a-library/internal/otel"
+	benchmarkpkg "k6-as-a-library/internal/benchmark"
 )
 
 func NewRootCommand() *cobra.Command {
@@ -52,7 +52,7 @@ func newRunCommand() *cobra.Command {
 	flags.StringVar(&config.combinedFilename, "combined-output", config.combinedFilename, "combined interactive and detailed HTML report output path")
 	flags.StringVar(&config.benchmarkManifestFilename, "benchmark-manifest-output", config.benchmarkManifestFilename, "deterministic benchmark manifest JSON output path")
 	flags.Var(
-		otel.NewOutputSelectionFlag(&config.outputs, &config.outputsFlagSet),
+		benchmarkpkg.NewOutputSelectionFlag(&config.outputs, &config.outputsFlagSet),
 		"out",
 		"additional output to enable (repeatable; supported value: opentelemetry)",
 	)

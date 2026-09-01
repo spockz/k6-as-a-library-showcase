@@ -230,6 +230,8 @@ func equivalentValue[T any](existing, incoming T) bool {
 		}
 		left.Source = dsl.Provenance{}
 		right.Source = dsl.Provenance{}
+		left.Request = left.Request.WithoutRuntime()
+		right.Request = right.Request.WithoutRuntime()
 		if left.Check != nil {
 			check := *left.Check
 			check.Source = dsl.Provenance{}

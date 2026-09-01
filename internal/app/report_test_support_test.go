@@ -4,6 +4,8 @@ import (
 	"io"
 
 	"go.k6.io/k6/lib"
+	"go.k6.io/k6/metrics"
+	"k6-as-a-library/internal/pact"
 	"k6-as-a-library/internal/report"
 )
 
@@ -17,7 +19,11 @@ type k6SummaryGroup = report.SummaryGroup
 type k6SummaryCheck = report.SummaryCheck
 
 func newSummaryOutput(writer io.Writer, htmlFilename, jsonFilename string, options lib.Options, splitByTags bool) *report.SummaryOutput {
-	return report.NewSummaryOutput(writer, htmlFilename, jsonFilename, options, splitByTags)
+	var groupBy []string
+	if splitByTags {
+		groupBy = pactTestGroupBy()
+	}
+	return report.NewSummaryOutput(writer, htmlFilename, jsonFilename, options, groupBy)
 }
 
 func renderK6ReporterHTML(summary report.Summary, logWriter io.Writer) (string, error) {
@@ -37,7 +43,20 @@ func writeK6ReporterHTMLWithRenderer(
 	return report.WriteK6ReporterHTMLWithRenderer(filename, summary, logWriter, render)
 }
 
-var summarySeriesKey = report.SummarySeriesKey
+func summarySeriesKey(tags *metrics.TagSet) (string, []report.SummaryTag, error) {
+	return report.SummarySeriesKey(tags, pactTestGroupBy())
+}
+
+func pactTestGroupBy() []string {
+	return []string{
+		pact.AttributeConsumerService,
+		pact.AttributeProviderService,
+		pact.AttributeEndpoint,
+		pact.AttributeInteraction,
+		pact.AttributeProviderState,
+	}
+}
+
 var summarySeriesMetricSuffix = report.SummarySeriesMetricSuffix
 
 func writeCombinedReport(filename string, summary *report.SummaryOutput, dashboard *report.DashboardReportOutput) error {

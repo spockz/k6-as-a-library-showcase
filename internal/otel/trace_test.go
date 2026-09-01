@@ -32,20 +32,19 @@ func TestTransportCreatesHTTPChildAndPropagatesW3CContext(t *testing.T) {
 		VUID:        2,
 		Iteration:   7,
 	})
-	interactionContext, interactionSpan := provider.StartPactInteractionSpan(benchmarkContext, InteractionAttributes{
+	interactionContext, interactionSpan := provider.StartInteractionSpan(benchmarkContext, "create order", InteractionAttributes{
 		Benchmark: BenchmarkAttributes{
 			BenchmarkID: "benchmark-1",
 			Scenario:    "checkout",
 			VUID:        2,
 			Iteration:   7,
 		},
-		Pact: PactAttributes{
-			ConsumerService: "checkout",
-			ProviderService: "orders",
-			Endpoint:        "POST /orders",
-			Interaction:     "create order",
-			ProviderState:   "an order can be created",
-			Name:            "pact:create-order",
+		Attributes: []StringAttribute{
+			{Name: "tenant", Value: "checkout"},
+			{Name: "service", Value: "orders"},
+			{Name: "operation", Value: "POST /orders"},
+			{Name: "interaction", Value: "create order"},
+			{Name: "state", Value: "an order can be created"},
 		},
 		Request: RequestAttributes{ExpectedStatus: http.StatusCreated},
 	})
@@ -82,7 +81,7 @@ func TestTransportCreatesHTTPChildAndPropagatesW3CContext(t *testing.T) {
 	}
 	spans := exporter.GetSpans()
 	benchmark := spanByName(t, spans, "benchmark")
-	interaction := spanByName(t, spans, "pact:create-order")
+	interaction := spanByName(t, spans, "create order")
 	httpSpan := spanByName(t, spans, "HTTP POST")
 
 	if benchmark.Parent.IsValid() {
@@ -114,8 +113,8 @@ func TestTransportCreatesHTTPChildAndPropagatesW3CContext(t *testing.T) {
 	if extractedContext.SpanID() != httpSpan.SpanContext.SpanID() {
 		t.Fatalf("propagated span ID = %v, want %v", extractedContext.SpanID(), httpSpan.SpanContext.SpanID())
 	}
-	if got, ok := spanAttribute(interaction, AttributeConsumerService); !ok || got != "checkout" {
-		t.Fatalf("consumer service attribute = %q, %t", got, ok)
+	if got, ok := spanAttribute(interaction, "tenant"); !ok || got != "checkout" {
+		t.Fatalf("tenant attribute = %q, %t", got, ok)
 	}
 	if got, ok := spanAttribute(httpSpan, AttributeURLPath); !ok || got != "/orders" {
 		t.Fatalf("HTTP path attribute = %q, %t", got, ok)
@@ -136,9 +135,7 @@ func TestTransportCreatesHTTPChildAndPropagatesW3CContext(t *testing.T) {
 func TestTransportCanDisablePropagationWithoutDisablingSpans(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	provider := newTestProvider(t, false, exporter)
-	contextWithSpan, span := provider.StartPactInteractionSpan(context.Background(), InteractionAttributes{
-		Pact: PactAttributes{Name: "pact:no-propagation"},
-	})
+	contextWithSpan, span := provider.StartInteractionSpan(context.Background(), "no propagation", InteractionAttributes{})
 	base := &capturingRoundTripper{statusCode: http.StatusOK}
 	transport := provider.WrapTransport(base)
 	request, err := http.NewRequestWithContext(contextWithSpan, http.MethodGet, "http://example.test/headers", nil)
@@ -202,14 +199,12 @@ func TestDisabledTracingUsesNoopProviderAndLeavesTransportUntouched(t *testing.T
 	}
 }
 
-func TestPactVerificationStatusAndSensitiveDataBounds(t *testing.T) {
+func TestVerificationStatusAndSensitiveDataBounds(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	provider := newTestProvider(t, false, exporter)
 
-	_, passingSpan := provider.StartPactInteractionSpan(context.Background(), InteractionAttributes{
-		Pact: PactAttributes{Name: "pact:passing"},
-	})
-	RecordPactVerification(passingSpan, PactVerificationResult{
+	_, passingSpan := provider.StartInteractionSpan(context.Background(), "passing", InteractionAttributes{})
+	RecordVerification(passingSpan, VerificationResult{
 		Passed:         true,
 		ExpectedStatus: http.StatusOK,
 		ActualStatus:   http.StatusOK,
@@ -218,15 +213,14 @@ func TestPactVerificationStatusAndSensitiveDataBounds(t *testing.T) {
 
 	long := strings.Repeat("attribute-value-", 100)
 	secret := strings.Repeat("sensitive-body-secret", 100)
-	_, failingSpan := provider.StartPactInteractionSpan(context.Background(), InteractionAttributes{
+	_, failingSpan := provider.StartInteractionSpan(context.Background(), long, InteractionAttributes{
 		Benchmark: BenchmarkAttributes{Name: long, BenchmarkID: long, Scenario: long},
-		Pact: PactAttributes{
-			ConsumerService: long,
-			ProviderService: long,
-			Endpoint:        long,
-			Interaction:     long,
-			ProviderState:   long,
-			Name:            long,
+		Attributes: []StringAttribute{
+			{Name: "tenant", Value: long},
+			{Name: "service", Value: long},
+			{Name: "operation", Value: long},
+			{Name: "interaction", Value: long},
+			{Name: "state", Value: long},
 		},
 		Request: RequestAttributes{
 			Method:         http.MethodPost,
@@ -235,7 +229,7 @@ func TestPactVerificationStatusAndSensitiveDataBounds(t *testing.T) {
 			ActualStatus:   http.StatusBadGateway,
 		},
 	})
-	RecordPactVerification(failingSpan, PactVerificationResult{
+	RecordVerification(failingSpan, VerificationResult{
 		Kind:           MismatchJSONBody,
 		ExpectedStatus: http.StatusOK,
 		ActualStatus:   http.StatusBadGateway,
@@ -247,7 +241,7 @@ func TestPactVerificationStatusAndSensitiveDataBounds(t *testing.T) {
 	if err := provider.ForceFlush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	passing := spanByName(t, exporter.GetSpans(), "pact:passing")
+	passing := spanByName(t, exporter.GetSpans(), "passing")
 	failing := spanByName(t, exporter.GetSpans(), long[:MaxSpanNameLength])
 	if passing.Status.Code != codes.Ok {
 		t.Fatalf("passing status = %v, want OK", passing.Status.Code)
@@ -255,10 +249,10 @@ func TestPactVerificationStatusAndSensitiveDataBounds(t *testing.T) {
 	if failing.Status.Code != codes.Error {
 		t.Fatalf("failing status = %v, want error", failing.Status.Code)
 	}
-	if got, ok := spanAttribute(failing, "pact.mismatch.kind"); !ok || got != string(MismatchJSONBody) {
+	if got, ok := spanAttribute(failing, "benchmark.mismatch.kind"); !ok || got != string(MismatchJSONBody) {
 		t.Fatalf("mismatch kind = %q, %t", got, ok)
 	}
-	if got, ok := intAttribute(failing, "pact.mismatch.count"); !ok || got != 1000 {
+	if got, ok := intAttribute(failing, "benchmark.mismatch.count"); !ok || got != 1000 {
 		t.Fatalf("mismatch count = %d, %t; want bounded count", got, ok)
 	}
 	for _, value := range spanValues(failing) {
@@ -373,9 +367,7 @@ func TestForceFlushAndShutdownAreBounded(t *testing.T) {
 func TestCancellationEndsHTTPChildAndRecordsTransportError(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	provider := newTestProvider(t, true, exporter)
-	interactionContext, interactionSpan := provider.StartPactInteractionSpan(context.Background(), InteractionAttributes{
-		Pact: PactAttributes{Name: "pact:canceled"},
-	})
+	interactionContext, interactionSpan := provider.StartInteractionSpan(context.Background(), "canceled", InteractionAttributes{})
 	requestContext, cancel := context.WithCancel(interactionContext)
 	cancel()
 	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, "http://example.test/canceled", nil)

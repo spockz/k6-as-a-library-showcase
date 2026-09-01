@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	"k6-as-a-library/internal/otel"
+	benchmarkpkg "k6-as-a-library/internal/benchmark"
 )
 
 func TestResolveRunConfigHonorsExplicitFlagsOverEnvironment(t *testing.T) {
@@ -15,7 +15,7 @@ func TestResolveRunConfigHonorsExplicitFlagsOverEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve environment configuration: %v", err)
 	}
-	if !reflect.DeepEqual(resolved.outputs, []string{otel.OutputName}) {
+	if !reflect.DeepEqual(resolved.outputs, []string{benchmarkpkg.TelemetryOutputName}) {
 		t.Fatalf("outputs = %#v, want one OpenTelemetry output", resolved.outputs)
 	}
 	if !resolved.traceConfiguration.Enabled || resolved.traceConfiguration.Protocol != "http" {
@@ -31,9 +31,9 @@ func TestResolveRunConfigHonorsExplicitFlagsOverEnvironment(t *testing.T) {
 	}
 
 	explicit := defaultRunConfig()
-	explicit.outputs = []string{otel.OutputName}
+	explicit.outputs = []string{benchmarkpkg.TelemetryOutputName}
 	explicit.outputsFlagSet = true
-	explicit.tracesOutput = otel.DefaultTracesOutput
+	explicit.tracesOutput = benchmarkpkg.DefaultTraceOutput
 	explicit.tracesOutputFlagSet = true
 	resolved, err = resolveRunConfig(explicit, map[string]string{
 		"K6_OUT":           "unsupported",
@@ -42,7 +42,7 @@ func TestResolveRunConfigHonorsExplicitFlagsOverEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve explicit flags: %v", err)
 	}
-	if !reflect.DeepEqual(resolved.outputs, []string{otel.OutputName}) {
+	if !reflect.DeepEqual(resolved.outputs, []string{benchmarkpkg.TelemetryOutputName}) {
 		t.Fatalf("explicit outputs = %#v", resolved.outputs)
 	}
 	if resolved.traceConfiguration.Enabled {

@@ -152,7 +152,7 @@ func (e *ReferenceError) Unwrap() error {
 // series bound.
 type CardinalityError struct {
 	Diagnostic dsl.Diagnostic
-	Dimensions []string
+	GroupBy    []string
 	Actual     int
 	Maximum    int
 }
@@ -163,7 +163,7 @@ func (e *CardinalityError) Error() string {
 	}
 	diagnostic := e.Diagnostic
 	diagnostic.Kind = dsl.ErrorCardinality
-	message := fmt.Sprintf("report dimensions %v produce cardinality %d, exceeding maximum %d", e.Dimensions, e.Actual, e.Maximum)
+	message := fmt.Sprintf("report grouping attributes %v produce cardinality %d, exceeding maximum %d", e.GroupBy, e.Actual, e.Maximum)
 	return (&dsl.ValidationError{Diagnostic: diagnostic, Message: message}).Error()
 }
 
@@ -173,7 +173,7 @@ func (e *CardinalityError) Unwrap() error {
 	}
 	diagnostic := e.Diagnostic
 	diagnostic.Kind = dsl.ErrorCardinality
-	diagnostic.Field = "report.seriesDimensions"
+	diagnostic.Field = "report.groupBy"
 	return &dsl.ValidationError{Diagnostic: diagnostic, Message: "report cardinality exceeds its maximum"}
 }
 

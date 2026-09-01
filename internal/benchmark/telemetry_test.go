@@ -1,10 +1,12 @@
 // These tests observe native benchmark tracing at the VU, transport, and provider boundaries.
-package app
+package benchmark
 
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -13,13 +15,15 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	telemetrytrace "go.opentelemetry.io/otel/trace"
+	"k6-as-a-library/internal/dsl"
 	k6oteltrace "k6-as-a-library/internal/otel"
+	"k6-as-a-library/internal/pact"
 )
 
 func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	var factoryConfig k6oteltrace.Config
-	provider, err := newTraceProvider(t.Context(), k6oteltrace.TraceOutputConfiguration{
+	provider, err := NewTraceProvider(t.Context(), TraceConfiguration{
 		Enabled:  true,
 		Protocol: "http",
 		Endpoint: "collector.example:4318",
@@ -51,15 +55,31 @@ func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T)
 	defer server.Close()
 
 	harness := newNativeVUTestHarness(t, server.URL, 0, provider)
-	interactions := []pactInteraction{
+	interactions := []pact.Interaction{
 		newTestTraceInteraction(t, "/teapot", "pact:teapot", http.StatusTeapot),
 		newTestTraceInteraction(t, "/wrong-status", "pact:wrong-status", http.StatusMultipleChoices),
 	}
-	execution, err := synthesizeBenchmark(defaultRunConfig(), &harness.runner.targetURL, interactions)
+	execution, err := pactTestExecution(interactions)
 	if err != nil {
 		t.Fatalf("create tracing execution plan: %v", err)
 	}
+	direct, err := directTestBenchmark(harness.runner.targetURL.GetURL())
+	if err != nil {
+		t.Fatalf("create direct tracing benchmark: %v", err)
+	}
+	mixed := execution.validated.Benchmark()
+	mixed.Cases = append(mixed.Cases, direct.Benchmark().Cases[0])
+	mixed.Baseline.Iterations = 3
+	validated, err := Compose(mixed)
+	if err != nil {
+		t.Fatalf("compose tracing benchmark: %v", err)
+	}
+	execution, err = NewExecution(validated)
+	if err != nil {
+		t.Fatalf("create mixed tracing execution: %v", err)
+	}
 	harness.runner.benchmark = execution
+	harness.runner.exactTarget = false
 	harness.runner.executionStartedAt = time.Now()
 	if err := harness.vu.RunOnce(); err != nil {
 		t.Fatalf("run passing expected-418 interaction: %v", err)
@@ -67,12 +87,6 @@ func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T)
 	if err := harness.vu.RunOnce(); err != nil {
 		t.Fatalf("run failing expected-300 interaction: %v", err)
 	}
-	execution, err = synthesizeBenchmark(defaultRunConfig(), &harness.runner.targetURL, nil)
-	if err != nil {
-		t.Fatalf("create direct tracing execution plan: %v", err)
-	}
-	harness.runner.benchmark = execution
-	harness.runner.executionStartedAt = time.Now()
 	if err := harness.vu.RunOnce(); err != nil {
 		t.Fatalf("run fixed request: %v", err)
 	}
@@ -87,7 +101,7 @@ func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T)
 		t.Fatalf("http_req_failed = %d, want three requests", len(requestFailureSamples))
 	}
 	for _, sample := range checkSamples {
-		interaction, _ := sample.Tags.Get(pactInteractionTag)
+		interaction, _ := sample.Tags.Get(pact.AttributeInteraction)
 		want := float64(1)
 		if interaction == "pact:wrong-status" {
 			want = 0
@@ -97,13 +111,13 @@ func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T)
 		}
 	}
 	for _, sample := range requestFailureSamples {
-		name, _ := sample.Tags.Get(pactInteractionTag)
+		name, _ := sample.Tags.Get(pact.AttributeInteraction)
 		want := float64(0)
 		if name == "pact:wrong-status" {
 			want = 1
 		}
 		if sample.Value != want {
-			t.Errorf("request failure %q = %v, want %v", name, sample.Value, want)
+			t.Errorf("request failure %q = %v, want %v (tags %v)", name, sample.Value, want, sample.Tags.Map())
 		}
 	}
 	for range 3 {
@@ -150,7 +164,7 @@ func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T)
 	if got, ok := spanAttributeValue(failing, k6oteltrace.AttributeExpectedStatus); !ok || got != "300" {
 		t.Fatalf("failing Pact expected status = %q, %t, want 300", got, ok)
 	}
-	if !hasTraceEvent(failing, k6oteltrace.PactVerificationEvent) {
+	if !hasTraceEvent(failing, k6oteltrace.VerificationEvent) {
 		t.Fatal("failing Pact span has no verification event")
 	}
 }
@@ -202,7 +216,7 @@ func TestNativeTracingCancellationEndsFixedRequestSpans(t *testing.T) {
 func TestFinalizeTraceProviderSurfacesFlushAndShutdownErrors(t *testing.T) {
 	flushErr := errors.New("trace export failed")
 	shutdownErr := errors.New("trace shutdown failed")
-	provider, err := newTraceProvider(t.Context(), k6oteltrace.TraceOutputConfiguration{
+	provider, err := NewTraceProvider(t.Context(), TraceConfiguration{
 		Enabled:  true,
 		Protocol: "http",
 		Endpoint: "collector.example:4318",
@@ -216,7 +230,7 @@ func TestFinalizeTraceProviderSurfacesFlushAndShutdownErrors(t *testing.T) {
 		t.Fatalf("create failing trace provider: %v", err)
 	}
 	_, benchmarkSpan := provider.StartBenchmarkSpan(t.Context(), k6oteltrace.BenchmarkAttributes{Name: "errors"})
-	if err := finalizeTraceProvider(provider, benchmarkSpan); !errors.Is(err, flushErr) || !errors.Is(err, shutdownErr) {
+	if err := FinalizeTraceProvider(provider, benchmarkSpan); !errors.Is(err, flushErr) || !errors.Is(err, shutdownErr) {
 		t.Fatalf("finalize error = %v, want flush and shutdown errors", err)
 	}
 }
@@ -236,19 +250,55 @@ func newInMemoryTraceProvider(t *testing.T, propagationEnabled bool, exporter sd
 	})
 }
 
-func newTestTraceInteraction(t *testing.T, path, name string, expectedStatus int) pactInteraction {
+func newTestTraceInteraction(t *testing.T, path, name string, expectedStatus int) pact.Interaction {
 	t.Helper()
-	return pactInteraction{
+	return pact.Interaction{
 		Name:     name,
-		Request:  pactHTTPRequest{Method: http.MethodGet, Path: path},
-		Response: pactHTTPResponse{Status: expectedStatus},
-		Tags: map[string]string{
-			pactConsumerTag:    "trace-consumer",
-			pactProviderTag:    "trace-provider",
-			pactEndpointTag:    "GET " + path,
-			pactInteractionTag: name,
+		Request:  pact.HTTPRequest{Method: http.MethodGet, Path: path},
+		Response: pact.HTTPResponse{Status: expectedStatus},
+		Attributes: map[string]string{
+			pact.AttributeConsumerService: "trace-consumer",
+			pact.AttributeProviderService: "trace-provider",
+			pact.AttributeEndpoint:        "GET " + path,
+			pact.AttributeInteraction:     name,
 		},
 	}
+}
+
+func pactTestExecution(interactions []pact.Interaction) (Execution, error) {
+	model := dsl.SynthesizedBenchmark{
+		SchemaVersion: dsl.CurrentSchemaVersion,
+		ID:            "native-go",
+		Baseline:      dsl.LoadSpec{Kind: dsl.LoadSharedIterations, VUs: 1, Iterations: int64(len(interactions))},
+		Segments:      []dsl.Segment{{ID: "all", Start: dsl.Duration("0s"), Selection: dsl.SelectionSpec{Mode: dsl.SelectionRoundRobin}, Checks: dsl.CheckInherit}},
+		Provenance:    []dsl.Provenance{{Kind: "generated", Identifier: "native-go"}},
+	}
+	for index, interaction := range interactions {
+		item, err := pact.Case(interaction, index)
+		if err != nil {
+			return Execution{}, err
+		}
+		model.Cases = append(model.Cases, item)
+		model.Provenance = append(model.Provenance, item.Source)
+	}
+	validated, err := Compose(model)
+	if err != nil {
+		return Execution{}, err
+	}
+	return NewExecution(validated)
+}
+
+func newIPv4TestServer(t *testing.T, handler http.Handler) *httptest.Server {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen for test server: %v", err)
+	}
+	server := httptest.NewUnstartedServer(handler)
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+	return server
 }
 
 type failingTraceExporter struct {

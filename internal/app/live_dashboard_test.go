@@ -15,6 +15,7 @@ import (
 	"go.k6.io/k6/lib/fsext"
 	"go.k6.io/k6/metrics"
 	"go.k6.io/k6/output"
+	"k6-as-a-library/internal/report"
 )
 
 func TestLiveDashboardServesUIAndStreamsSnapshots(t *testing.T) {
@@ -25,7 +26,7 @@ func TestLiveDashboardServesUIAndStreamsSnapshots(t *testing.T) {
 
 	logger := logrus.New()
 	logger.SetOutput(io.Discard)
-	liveDashboard, err := newLiveDashboardOutput(config, output.Params{
+	liveDashboard, err := report.NewLiveDashboardOutput(output.Params{
 		Logger:      logger,
 		Environment: map[string]string{},
 		StdOut:      io.Discard,
@@ -35,6 +36,8 @@ func TestLiveDashboardServesUIAndStreamsSnapshots(t *testing.T) {
 			{TimeOffset: 0, PlannedVUs: 1},
 			{TimeOffset: 2 * time.Second, PlannedVUs: 0},
 		},
+	}, report.LiveDashboardOptions{
+		Host: config.dashboardHost, Port: config.dashboardPort, Period: dashboardMinPeriod,
 	})
 	if err != nil {
 		t.Fatalf("create live dashboard: %v", err)
