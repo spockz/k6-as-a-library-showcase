@@ -26,6 +26,57 @@ Development and the source-mounted benchmark runner require Go 1.27.0.
 - `internal/report` consumes metrics and finalized data streams to generate terminal, k6-reporter, dashboard, combined, and live reports
 - `internal/artifact` and `internal/k6output` own validated atomic publication and k6 output adapters
 
+Arrows in the diagram point from a package to the internal package it depends
+on. The root executable depends only on the application composition boundary.
+
+```mermaid
+flowchart TD
+    Main["repository root<br/>Executable entry point"]
+
+    subgraph Composition["Composition"]
+        App["internal/app<br/>CLI, source selection, wiring, and presentation"]
+    end
+
+    subgraph Sources["Source adapters"]
+        Agreement["internal/agreement<br/>SLA agreement adapter"]
+        Pact["internal/pact<br/>Pact adapter"]
+    end
+
+    subgraph Core["Source-neutral planning and execution"]
+        Planning["internal/planning<br/>Maximum-stress load-plan compiler"]
+        Benchmark["internal/benchmark<br/>k6 scheduling, HTTP execution, and verification"]
+        DSL["internal/dsl<br/>Pure source-neutral domain model"]
+        OTel["internal/otel<br/>OTLP transport and providers"]
+    end
+
+    subgraph Outputs["Output and artifact infrastructure"]
+        Report["internal/report<br/>Terminal, HTML, dashboard, and combined reports"]
+        K6Output["internal/k6output<br/>k6 output adapters"]
+        Artifact["internal/artifact<br/>Validated atomic publication"]
+    end
+
+    Main --> App
+
+    App --> Agreement
+    App --> Pact
+    App --> Planning
+    App --> Benchmark
+    App --> DSL
+    App --> Report
+    App --> K6Output
+    App --> Artifact
+
+    Agreement --> DSL
+    Pact --> DSL
+    Planning --> DSL
+    Benchmark --> DSL
+    Benchmark --> OTel
+    Benchmark --> Artifact
+
+    Report --> Artifact
+    K6Output --> Artifact
+```
+
 As observable through the used language, this project has been created with heavy assistance from Codex to find the proper integration points.
 
 ## Comparison with the k6 binary
@@ -49,7 +100,7 @@ Production metric samples use k6's built-in metric objects rather than recreatin
 
 ### Benchmark manifest
 
-`--benchmark-manifest-output PATH` is optional and disabled by default. When provided, direct or Pact input is synthesized and validated before execution, then the `SynthesizedBenchmark` data is atomically published as a deterministic, versioned JSON `BenchmarkManifest` ending in a newline. Schema version 3 uses source-neutral `attributes`, `metadata`, `groupBy`, SLA load requirements, and executor-ready load phases. Source adapters own their attribute names; `groupBy` only selects which declared attributes split aggregate report series. The manifest also contains request paths, queries, expectations, checks, thresholds, segments, provenance, and human-readable descriptions of runtime request generation and response matching. It contains no provider base URL, executable callbacks, or k6 runtime objects. A decoded manifest therefore uses identity request materialization and unconditional response matching until a source adapter rebinds runtime behavior. Round-trip validation occurs before rename, so generation or validation failure leaves an existing destination unchanged.
+`--benchmark-manifest-output PATH` is optional and disabled by default. Every run executes a validated `SynthesizedBenchmark`; direct CLI request parameters are only a frontend that creates this DSL model ephemerally. When manifest output is provided, that same model is atomically published as a deterministic, versioned JSON `BenchmarkManifest` ending in a newline. Schema version 3 uses source-neutral `attributes`, `metadata`, `groupBy`, SLA load requirements, and executor-ready load phases. Source adapters own their attribute names; `groupBy` only selects which declared attributes split aggregate report series. The manifest also contains request paths, queries, expectations, checks, thresholds, segments, provenance, and human-readable descriptions of runtime request generation and response matching. It contains no provider base URL, executable callbacks, or k6 runtime objects. A decoded manifest therefore uses identity request materialization and unconditional response matching until a source adapter rebinds runtime behavior. Round-trip validation occurs before rename, so generation or validation failure leaves an existing destination unchanged.
 
 Pact-owned attributes use the `pact` namespace: `pact.consumer_service`,
 `pact.provider_service`, `pact.endpoint`, `pact.interaction`, and

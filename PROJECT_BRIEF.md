@@ -72,6 +72,10 @@ the k6 CLI or JavaScript runtime.
   materializes requests, validates concrete requests, adapts them to HTTP,
   executes them through k6, matches concrete responses, and emits the metric
   and telemetry events produced by execution.
+- The validated DSL is the only execution input. Direct-request CLI parameters
+  are a frontend convenience that synthesizes an ephemeral benchmark and load
+  plan; downstream packages must not model direct plans as a separate input
+  kind.
 - Benchmark execution propagates case and active-segment attributes to metrics
   and telemetry without interpreting source-specific names. Active-segment
   values override case values with the same name.
@@ -89,6 +93,129 @@ the k6 CLI or JavaScript runtime.
   workload execution, source semantics, or report rendering.
 - Dependencies point inward through the DSL and neutral execution/reporting
   contracts. Source adapters and reporting remain independent of one another.
+
+### DSL-only architecture
+
+The validated DSL carries all workload and load-plan semantics across the
+execution boundary. The provider base URL is a runtime deployment binding, not
+an alternative workload model.
+
+```mermaid
+flowchart LR
+    subgraph Frontends["Frontend and source adaptation: internal/app"]
+        Direct["Direct CLI parameters"]
+        Pact["Pact adapter"]
+        Agreement["Agreement adapter"]
+        OpenAPI["Future OpenAPI adapter"]
+        Compose["Compose draft benchmark"]
+
+        Direct -->|"create ephemeral DSL case"| Compose
+        Pact -->|"create DSL cases and hooks"| Compose
+        Agreement -->|"create load and failure requirements"| Compose
+        OpenAPI -.->|"create operations and expectations"| Compose
+    end
+
+    subgraph Domain["Source-neutral domain: internal/dsl"]
+        Draft["SynthesizedBenchmark draft"]
+        Validate["Normalize, validate, and freeze"]
+        Validated["ValidatedBenchmark"]
+        Manifest["Optional deterministic manifest"]
+    end
+
+    Planner["internal/planning<br/>Precompute executor-ready LoadPlan"]
+
+    Compose --> Draft
+    Draft --> Planner
+    Planner --> Validate
+    Validate --> Validated
+    Validated --> Manifest
+
+    subgraph Runtime["Generic execution: internal/benchmark"]
+        Engine["Map load phases to k6 executors"]
+        Runner["Select and materialize DSL requests"]
+        HTTP["httpext.MakeRequest"]
+        Verify["DSL response matching and objective checks"]
+
+        Engine --> Runner
+        Runner --> HTTP
+        HTTP --> Verify
+    end
+
+    Validated --> Engine
+    Binding["Runtime provider base URL"] --> HTTP
+
+    subgraph Consumers["Outputs and telemetry"]
+        Metrics["k6 metric samples and checks"]
+        Telemetry["OpenTelemetry traces and metrics"]
+        Reports["Console, JSON, HTML, dashboard, and combined reports"]
+
+        Metrics --> Reports
+    end
+
+    Verify --> Metrics
+    Verify --> Telemetry
+```
+
+Solid arrows are production data flow; the dashed OpenAPI path is planned. No
+source-specific request type crosses the `ValidatedBenchmark` boundary.
+`RequestTimeout` is currently still passed separately through `EngineConfig`
+and `RunnerConfig`; moving that execution policy into the DSL is required to
+make the sole-input boundary literal.
+
+### Execution pipeline
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI as internal/app CLI
+    participant Adapter as Source adapters
+    participant Planner as internal/planning
+    participant DSL as DSL validation boundary
+    participant Manifest as Manifest publisher
+    participant Engine as internal/benchmark Engine
+    participant Executor as k6 executor and VUs
+    participant Runtime as DSL runtime adapter
+    participant HTTP as httpext.MakeRequest
+    participant Provider as Target provider
+    participant Checks as DSL objective checks
+    participant Outputs as k6 outputs and reports
+
+    User->>CLI: Run with CLI and source parameters
+    CLI->>Adapter: Adapt inputs into DSL cases and requirements
+    Note over CLI,Adapter: Direct parameters create an ephemeral DSL case
+    Adapter-->>CLI: Draft SynthesizedBenchmark
+    CLI->>Planner: Compile explicit or maximum-stress LoadPlan
+    Planner-->>CLI: Executor-ready phases
+    CLI->>DSL: Normalize, validate, compose, and freeze
+    DSL-->>CLI: ValidatedBenchmark
+
+    opt Manifest output requested
+        CLI->>Manifest: Publish validated benchmark atomically
+    end
+
+    CLI->>Engine: ValidatedBenchmark and provider binding
+    Engine->>Executor: Create and schedule precomputed phases
+
+    loop Each planned operation start
+        Executor->>Runtime: Select phase, segment, and DSL case
+        Runtime->>Runtime: Materialize concrete request
+        Runtime->>HTTP: Execute request with k6 VU state
+        HTTP->>Provider: HTTP request
+        Provider-->>HTTP: Response or transport failure
+        HTTP-->>Outputs: Emit built-in HTTP metrics
+        HTTP-->>Runtime: k6 response and timing data
+        Runtime->>Runtime: Match response through DSL hook
+        Runtime->>Checks: Evaluate failure budgets and p100 objective
+        Checks-->>Outputs: Emit tagged k6 checks and metric samples
+        Runtime-->>Executor: Complete iteration
+    end
+
+    Executor-->>Engine: Complete planned phases
+    Engine->>Checks: Finalize rolling breaches and unmet starts
+    Checks-->>Engine: Return run failure status, if any
+    Engine->>Outputs: Close sample stream and finalize outputs
+    Outputs-->>User: Reports, diagnostics, and process result
+```
 
 ## k6 integration requirements
 
