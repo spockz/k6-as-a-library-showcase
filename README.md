@@ -13,6 +13,8 @@ The goal is to reuse k6's execution engine, virtual-user model, built-in metrics
 
 The project also serves as an exploration of k6's current public Go API boundaries. Local compatibility code is kept where k6 functionality is internal and therefore cannot be imported by an external Go module.
 
+Development and the source-mounted benchmark runner require Go 1.27.0.
+
 ## Code layout
 
 - the repository root contains only the executable entry point

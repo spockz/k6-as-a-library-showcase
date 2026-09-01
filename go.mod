@@ -1,6 +1,6 @@
 module k6-as-a-library
 
-go 1.26.6
+go 1.27.0
 
 require (
 	github.com/grafana/sobek v0.0.0-20260429085637-a66d4790012b

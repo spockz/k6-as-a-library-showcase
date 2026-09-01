@@ -23,7 +23,7 @@ validation environment, so no digest is invented here.
 
 | Service | Image |
 | --- | --- |
-| Benchmark runner | `docker.io/library/golang:1.26.6-bookworm` |
+| Benchmark runner | `docker.io/library/golang:1.27.0-bookworm` |
 | go-httpbin | `ghcr.io/mccutchen/go-httpbin:2.25.0@sha256:20739736d4eb8dc1b998dff701f437b8bd62dcc46492bd0d861e89890ca36500` |
 | Collector contrib | `ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.158.0` |
 | Mimir | `grafana/mimir:3.2.0` |

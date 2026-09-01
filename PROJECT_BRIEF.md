@@ -26,8 +26,8 @@ The eventual benchmark generator should combine:
 The current program executes a fixed HTTP GET workload or Pact interactions
 using k6 shared iterations. It provides:
 
-- configurable VUs, iterations, minimum iteration duration, request timeout,
-  and maximum duration
+- configurable explicit VUs and iterations, agreement-derived load plans,
+  request timeout, and explicit-load maximum duration
 - k6-compatible JSON metric observations
 - a sectioned k6-style terminal report covering every observed metric and Pact
   tag submetric
@@ -230,7 +230,7 @@ the k6 CLI or JavaScript runtime.
 - Cover expected and unexpected HTTP statuses.
 - Cover network error tags and error codes.
 - Cover per-VU cookie isolation.
-- Cover iteration pacing and cancellation.
+- Cover iteration cancellation and planned-load deadline behavior.
 - Cover required live-dashboard metrics and observable k6-reporter HTML
   content.
 - Cover terminal metric categories, typed values, thresholds, checks, groups,
@@ -240,8 +240,10 @@ the k6 CLI or JavaScript runtime.
   compatibility fixtures for every supported specification version, matcher,
   rule combination, and generator.
 - Keep JSON schema compatibility checks against the pinned k6 source.
-- Run gofmt, gopls diagnostics, go vet, the full test suite, and the race
-  detector after Go changes.
+- Target Go 1.27.0 and use its safe language and standard-library
+  modernizations where they improve clarity or avoid allocation.
+- Run `make check` before separate tests and as the final verification after Go
+  changes; it owns formatting, imports, fixes, diagnostics, lint, and race tests.
 
 ## Working constraints
 
