@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -95,12 +96,7 @@ func ValidateOutputNames(names []string) error {
 }
 
 func HasOutput(names []string, wanted string) bool {
-	for _, name := range names {
-		if name == wanted {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(names, wanted)
 }
 
 func NormalizeOutputNames(names []string) []string {
@@ -121,7 +117,7 @@ func ParseOutputSelection(raw string) ([]string, error) {
 		return nil, nil
 	}
 	var names []string
-	for _, name := range strings.Split(raw, ",") {
+	for name := range strings.SplitSeq(raw, ",") {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			return nil, fmt.Errorf("invalid empty output in %q", raw)
@@ -445,7 +441,7 @@ func parseOTELMetricsEnvironment(environment map[string]string) (otelMetricsConf
 
 func parseOTELHeaders(raw string) (map[string]string, error) {
 	headers := make(map[string]string)
-	for _, header := range strings.Split(raw, defaultOTELHeaderSeparator) {
+	for header := range strings.SplitSeq(raw, defaultOTELHeaderSeparator) {
 		key, value, ok := strings.Cut(header, defaultOTELHeaderValueDivider)
 		if !ok {
 			return nil, fmt.Errorf("invalid header %q, expected format key=value", header)
@@ -503,7 +499,7 @@ func ParseTracesOutput(line string) (TraceOutputConfiguration, error) {
 		return TraceOutputConfiguration{}, fmt.Errorf("%w %q", errInvalidTracesOutput, outputName)
 	}
 
-	for _, token := range strings.Split(line, ",") {
+	for token := range strings.SplitSeq(line, ",") {
 		key, value, ok := strings.Cut(token, "=")
 		if !ok {
 			return TraceOutputConfiguration{}, fmt.Errorf("%w: token %q has no value", errInvalidTracesOutput, token)

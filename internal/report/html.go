@@ -11,10 +11,11 @@ import (
 
 	"github.com/grafana/sobek"
 
-	"go.k6.io/k6/lib"
-	"go.k6.io/k6/metrics"
 	"k6-as-a-library/internal/artifact"
 	reporter "k6-as-a-library/third_party/k6-reporter/v3.0.4"
+
+	"go.k6.io/k6/lib"
+	"go.k6.io/k6/metrics"
 )
 
 const K6ReporterVersion = "3.0.4"

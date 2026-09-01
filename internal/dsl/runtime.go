@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 )
 
 func (request RequestSpec) WithRuntime(runtime RequestRuntime, description BehaviorDescription) RequestSpec {
@@ -77,9 +78,7 @@ func cloneHTTPResponse(response *HTTPResponse) *HTTPResponse {
 		Cookies:    make(map[string][]ResponseCookie, len(response.Cookies)),
 		Body:       append([]byte(nil), response.Body...),
 	}
-	for name, value := range response.Headers {
-		result.Headers[name] = value
-	}
+	maps.Copy(result.Headers, response.Headers)
 	for name, values := range response.Cookies {
 		result.Cookies[name] = append([]ResponseCookie(nil), values...)
 	}

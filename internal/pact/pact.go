@@ -18,8 +18,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/pact-foundation/pact-go/v2/models"
 	"k6-as-a-library/internal/dsl"
+
+	"github.com/pact-foundation/pact-go/v2/models"
 )
 
 const (

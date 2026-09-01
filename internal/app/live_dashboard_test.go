@@ -10,12 +10,13 @@ import (
 	"testing"
 	"time"
 
+	"k6-as-a-library/internal/report"
+
 	"github.com/sirupsen/logrus"
 	"go.k6.io/k6/lib"
 	"go.k6.io/k6/lib/fsext"
 	"go.k6.io/k6/metrics"
 	"go.k6.io/k6/output"
-	"k6-as-a-library/internal/report"
 )
 
 func TestLiveDashboardServesUIAndStreamsSnapshots(t *testing.T) {

@@ -17,12 +17,13 @@ import (
 	"sync"
 	"time"
 
+	"k6-as-a-library/internal/artifact"
+
 	dashboardassets "github.com/grafana/xk6-dashboard-assets"
 	"github.com/grafana/xk6-dashboard/dashboard"
 	"go.k6.io/k6/lib/fsext"
 	"go.k6.io/k6/metrics"
 	"go.k6.io/k6/output"
-	"k6-as-a-library/internal/artifact"
 )
 
 const (
@@ -576,7 +577,7 @@ func (a *dashboardReportAccumulator) addSample(
 			continue
 		}
 		submetricSample := sample
-		submetricSample.TimeSeries.Metric = submetric.Metric
+		submetricSample.Metric = submetric.Metric
 		if err := a.addAggregate(submetric.Name, submetric.Metric, submetricSample, configuredThresholds); err != nil {
 			return err
 		}

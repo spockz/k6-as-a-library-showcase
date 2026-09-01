@@ -3,8 +3,9 @@ package app
 import (
 	"time"
 
-	"go.k6.io/k6/output"
 	"k6-as-a-library/internal/report"
+
+	"go.k6.io/k6/output"
 )
 
 const (

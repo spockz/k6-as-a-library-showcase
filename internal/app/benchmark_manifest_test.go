@@ -8,9 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"go.k6.io/k6/lib/netext/httpext"
 	benchmarkpkg "k6-as-a-library/internal/benchmark"
 	"k6-as-a-library/internal/dsl"
+
+	"go.k6.io/k6/lib/netext/httpext"
 )
 
 func TestWriteBenchmarkManifestPublishesCanonicalValidatedBenchmark(t *testing.T) {

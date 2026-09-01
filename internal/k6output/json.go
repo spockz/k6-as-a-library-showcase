@@ -8,9 +8,10 @@ import (
 	"sync"
 	"time"
 
+	"k6-as-a-library/internal/artifact"
+
 	"go.k6.io/k6/metrics"
 	"go.k6.io/k6/output"
-	"k6-as-a-library/internal/artifact"
 )
 
 type jsonOutput struct {

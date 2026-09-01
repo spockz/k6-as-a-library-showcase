@@ -3,10 +3,11 @@ package app
 import (
 	"io"
 
-	"go.k6.io/k6/lib"
-	"go.k6.io/k6/metrics"
 	"k6-as-a-library/internal/pact"
 	"k6-as-a-library/internal/report"
+
+	"go.k6.io/k6/lib"
+	"go.k6.io/k6/metrics"
 )
 
 const k6ReporterVersion = report.K6ReporterVersion

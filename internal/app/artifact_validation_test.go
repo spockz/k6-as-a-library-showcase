@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"go.k6.io/k6/metrics"
 	"k6-as-a-library/internal/k6output"
+
+	"go.k6.io/k6/metrics"
 )
 
 func TestValidateK6JSONArtifactAcceptsGeneratedMultilineOutput(t *testing.T) {

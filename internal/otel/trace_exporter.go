@@ -3,6 +3,7 @@ package otel
 
 import (
 	"context"
+	"maps"
 
 	otlptracegrpc "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	otlptracehttp "go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -92,8 +93,6 @@ func cloneHeaders(headers map[string]string) map[string]string {
 		return nil
 	}
 	clone := make(map[string]string, len(headers))
-	for key, value := range headers {
-		clone[key] = value
-	}
+	maps.Copy(clone, headers)
 	return clone
 }

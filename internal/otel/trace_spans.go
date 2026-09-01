@@ -198,10 +198,7 @@ func RecordVerification(span trace.Span, result VerificationResult) {
 		values = append(values, attribute.Int(AttributeHTTPStatusCode, result.ActualStatus))
 	}
 	if result.MismatchCount > 0 {
-		count := result.MismatchCount
-		if count > maxMismatchCount {
-			count = maxMismatchCount
-		}
+		count := min(result.MismatchCount, maxMismatchCount)
 		values = append(values, attribute.Int("benchmark.mismatch.count", count))
 	}
 	span.SetAttributes(values...)

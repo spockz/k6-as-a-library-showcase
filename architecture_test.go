@@ -23,7 +23,6 @@ func TestPackageDependencyBoundaries(t *testing.T) {
 		{directory: "internal/app", forbidden: []string{"go.opentelemetry.io/", "k6-as-a-library/internal/otel", "go.k6.io/k6/lib/executor", "go.k6.io/k6/lib/netext/httpext"}},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.directory, func(t *testing.T) {
 			t.Parallel()
 			assertPackageImports(t, test.directory, test.forbidden)

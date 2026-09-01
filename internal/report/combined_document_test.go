@@ -6,8 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	dashboardassets "github.com/grafana/xk6-dashboard-assets"
 	"k6-as-a-library/internal/artifact"
+
+	dashboardassets "github.com/grafana/xk6-dashboard-assets"
 )
 
 func TestComposeCombinedDocumentUsesReporterAsBaseAndEmbedsDashboardGraphs(t *testing.T) {

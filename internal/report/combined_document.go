@@ -7,9 +7,10 @@ import (
 	"html"
 	"strings"
 
+	"k6-as-a-library/internal/artifact"
+
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
-	"k6-as-a-library/internal/artifact"
 )
 
 const (

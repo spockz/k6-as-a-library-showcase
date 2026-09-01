@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+
+	k6oteltrace "k6-as-a-library/internal/otel"
 
 	"go.k6.io/k6/output"
 	"go.opentelemetry.io/otel/trace"
-	k6oteltrace "k6-as-a-library/internal/otel"
 )
 
 const (
@@ -116,9 +118,7 @@ func cloneTraceHeaders(headers map[string]string) map[string]string {
 		return nil
 	}
 	clone := make(map[string]string, len(headers))
-	for key, value := range headers {
-		clone[key] = value
-	}
+	maps.Copy(clone, headers)
 	return clone
 }
 

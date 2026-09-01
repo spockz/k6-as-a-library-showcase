@@ -154,7 +154,7 @@ func (o *SummaryOutput) addMetricSample(
 			continue
 		}
 		submetricSample := sample
-		submetricSample.TimeSeries.Metric = submetric.Metric
+		submetricSample.Metric = submetric.Metric
 		o.addMetricAggregate(aggregates, submetricSample, true)
 	}
 }
