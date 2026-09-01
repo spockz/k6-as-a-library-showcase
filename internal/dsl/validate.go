@@ -64,6 +64,8 @@ var validOperators = map[string]bool{
 	"<=": true,
 }
 
+var validFunctionalStatusCode = regexp.MustCompile(`^(?:[134]xx|[1-4][0-9]{2})$`)
+
 // Validate checks all invariants that can be evaluated without an execution
 // target or a scheduler. Cross-plan references and executor capabilities are
 // checked by internal/benchmark.
@@ -651,6 +653,49 @@ func validateLoadRequirements(collector *validationCollector, envelopes []LoadEn
 			if constraint.Unit != LoadUnitOperationStart {
 				collector.add(constraintContext, "unsupported load unit %q", constraint.Unit)
 			}
+			validatePermittedFailures(collector, constraint.PermittedFailures, constraintContext)
+		}
+	}
+}
+
+func validatePermittedFailures(collector *validationCollector, failures []PermittedFailure, parent Diagnostic) {
+	seen := make(map[string]bool, len(failures))
+	for index, failure := range failures {
+		context := parent
+		context.Field += fmt.Sprintf(".permittedFailures[%d]", index)
+		if err := validateIdentifier(failure.ID, "permitted failure ID"); err != nil {
+			collector.add(context, "%v", err)
+		}
+		if seen[failure.ID] {
+			collector.addKind(ErrorDuplicate, context, "duplicate permitted failure ID %q", failure.ID)
+		}
+		seen[failure.ID] = true
+		if failure.Amount < 0 {
+			collector.add(context, "permitted failure amount must not be negative")
+		}
+
+		switch failure.Category {
+		case FailureCategoryTransport:
+			if len(failure.StatusCodes) != 0 {
+				collector.add(context, "transport failure budget cannot declare status codes")
+			}
+		case FailureCategoryHTTP5xx:
+			if len(failure.StatusCodes) != 0 {
+				collector.add(context, "HTTP 5xx failure budget cannot declare status codes")
+			}
+		case FailureCategoryFunctional:
+			statusCodes := make(map[string]bool, len(failure.StatusCodes))
+			for _, statusCode := range failure.StatusCodes {
+				if !validFunctionalStatusCode.MatchString(statusCode) || strings.HasPrefix(statusCode, "2") {
+					collector.add(context, "functional failure status code %q must be an exact non-2xx, non-5xx HTTP status or 1xx, 3xx, or 4xx class", statusCode)
+				}
+				if statusCodes[statusCode] {
+					collector.addKind(ErrorDuplicate, context, "duplicate functional failure status code %q", statusCode)
+				}
+				statusCodes[statusCode] = true
+			}
+		default:
+			collector.add(context, "unsupported failure category %q", failure.Category)
 		}
 	}
 }

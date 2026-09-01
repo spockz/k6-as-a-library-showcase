@@ -1,0 +1,32 @@
+# This example permits sharp intra-hour spikes while capping the overall load at a normal one-operation-per-second daily average.
+agreements:
+  - consumer: spiky-client
+    provider: example-api
+    slo:
+      - endpoint:
+          host: localhost
+          method: GET
+          pathTemplate: /headers
+        loadConstraints:
+          - amount: 100
+            per-time-unit: second
+          - amount: 3600
+            per-time-unit: hour
+            permittedFailures:
+              - category: transport
+                amount: 20
+              - category: http_5xx
+                amount: 18
+              - category: functional
+                amount: 36
+                statusCodes: ["400", "404", "409", "422"]
+          - amount: 86400
+            per-time-unit: day
+        responseTimes:
+          - statusCode: 200
+            mean: 150ms
+            median: 125ms
+            p99: 400ms
+            p100: 500ms
+          - statusCode: 5xx
+            p100: 500ms

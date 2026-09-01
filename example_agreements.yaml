@@ -1,3 +1,4 @@
+# This canonical agreement exercises rolling load, response-time, and categorized failure requirements together.
 agreements:
   - consumer: logical-service-name-of-the-consumer
     provider: logical-service-name-of-the-provider
@@ -11,6 +12,14 @@ agreements:
             per-time-unit: ms
           - amount: 800
             per-time-unit: day
+            permittedFailures:
+              - category: transport
+                amount: 5
+              - category: http_5xx
+                amount: 4
+              - category: functional
+                amount: 8
+                statusCodes: ["400", "404", "409", "422"]
         responseTimes:
           - statusCode: 200
             mean: 100ms

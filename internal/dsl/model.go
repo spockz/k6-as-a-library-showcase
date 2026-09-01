@@ -362,11 +362,20 @@ type LoadEnvelope struct {
 
 // LoadConstraint limits logical operation starts in one rolling window.
 type LoadConstraint struct {
-	ID         string         `json:"id"`
-	Amount     int64          `json:"amount"`
-	Window     Duration       `json:"window"`
-	WindowKind LoadWindowKind `json:"windowKind"`
-	Unit       LoadUnit       `json:"unit"`
+	ID                string             `json:"id"`
+	Amount            int64              `json:"amount"`
+	Window            Duration           `json:"window"`
+	WindowKind        LoadWindowKind     `json:"windowKind"`
+	Unit              LoadUnit           `json:"unit"`
+	PermittedFailures []PermittedFailure `json:"permittedFailures,omitempty"`
+}
+
+// PermittedFailure is an absolute failure ceiling in its parent load constraint's rolling window.
+type PermittedFailure struct {
+	ID          string          `json:"id"`
+	Category    FailureCategory `json:"category"`
+	Amount      int64           `json:"amount"`
+	StatusCodes []string        `json:"statusCodes,omitempty"`
 }
 
 // ResponseTimeObjective preserves status-specific SLA timings used to size planned concurrency.
@@ -465,6 +474,7 @@ type LoadUnit string
 type LoadStrategy string
 type LoadClassification string
 type PlannedLoadKind string
+type FailureCategory string
 type CheckMode string
 type GapPolicy string
 
@@ -472,6 +482,12 @@ const (
 	PayloadEncodingJSON   PayloadEncoding = "json"
 	PayloadEncodingText   PayloadEncoding = "text"
 	PayloadEncodingBase64 PayloadEncoding = "base64"
+)
+
+const (
+	FailureCategoryTransport  FailureCategory = "transport"
+	FailureCategoryHTTP5xx    FailureCategory = "http_5xx"
+	FailureCategoryFunctional FailureCategory = "functional"
 )
 
 const (

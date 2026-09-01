@@ -34,8 +34,14 @@ type endpoint struct {
 	PathTemplate string `yaml:"pathTemplate"`
 }
 type constraint struct {
+	Amount            int64              `yaml:"amount"`
+	PerTimeUnit       string             `yaml:"per-time-unit"`
+	PermittedFailures []permittedFailure `yaml:"permittedFailures"`
+}
+type permittedFailure struct {
+	Category    string `yaml:"category"`
 	Amount      int64  `yaml:"amount"`
-	PerTimeUnit string `yaml:"per-time-unit"`
+	StatusCodes []any  `yaml:"statusCodes"`
 }
 type responseTime struct {
 	StatusCode              any `yaml:"statusCode"`
@@ -78,7 +84,19 @@ func Decode(reader io.Reader, source string, cases []dsl.Case) (Result, error) {
 				if err != nil {
 					return Result{}, fmt.Errorf("agreement %d SLO %d constraint %d: %w", agreementIndex, sloIndex, constraintIndex, err)
 				}
-				envelope.Constraints = append(envelope.Constraints, dsl.LoadConstraint{ID: fmt.Sprintf("%s-limit-%d", envelopeID, constraintIndex+1), Amount: limit.Amount, Window: dsl.Duration(window.String()), WindowKind: dsl.LoadWindowRolling, Unit: dsl.LoadUnitOperationStart})
+				constraintID := fmt.Sprintf("%s-limit-%d", envelopeID, constraintIndex+1)
+				adapted := dsl.LoadConstraint{ID: constraintID, Amount: limit.Amount, Window: dsl.Duration(window.String()), WindowKind: dsl.LoadWindowRolling, Unit: dsl.LoadUnitOperationStart}
+				for failureIndex, failure := range limit.PermittedFailures {
+					statusCodes := make([]string, len(failure.StatusCodes))
+					for statusIndex, statusCode := range failure.StatusCodes {
+						statusCodes[statusIndex] = fmt.Sprint(statusCode)
+					}
+					adapted.PermittedFailures = append(adapted.PermittedFailures, dsl.PermittedFailure{
+						ID: fmt.Sprintf("%s-failure-%d", constraintID, failureIndex+1), Category: dsl.FailureCategory(failure.Category),
+						Amount: failure.Amount, StatusCodes: statusCodes,
+					})
+				}
+				envelope.Constraints = append(envelope.Constraints, adapted)
 			}
 			if len(envelope.Constraints) == 0 {
 				return Result{}, fmt.Errorf("agreement %d SLO %d: no load constraints", agreementIndex, sloIndex)

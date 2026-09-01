@@ -2,6 +2,7 @@
 package dsl
 
 import (
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -422,7 +423,7 @@ func normalizeLoadEnvelope(envelope LoadEnvelope) LoadEnvelope {
 	result.ID = strings.TrimSpace(result.ID)
 	result.Scope = normalizeSelector(result.Scope)
 	result.Source = normalizeProvenance(result.Source)
-	result.Constraints = append([]LoadConstraint(nil), envelope.Constraints...)
+	result.Constraints = cloneLoadConstraints(envelope.Constraints)
 	result.ResponseTimes = append([]ResponseTimeObjective(nil), envelope.ResponseTimes...)
 	for index := range result.ResponseTimes {
 		objective := &result.ResponseTimes[index]
@@ -438,6 +439,19 @@ func normalizeLoadEnvelope(envelope LoadEnvelope) LoadEnvelope {
 		constraint.Window = normalizeDurationValue(constraint.Window)
 		constraint.WindowKind = LoadWindowKind(strings.ToLower(strings.TrimSpace(string(constraint.WindowKind))))
 		constraint.Unit = LoadUnit(strings.ToLower(strings.TrimSpace(string(constraint.Unit))))
+		for failureIndex := range constraint.PermittedFailures {
+			failure := &constraint.PermittedFailures[failureIndex]
+			failure.ID = strings.TrimSpace(failure.ID)
+			failure.Category = FailureCategory(strings.ToLower(strings.TrimSpace(string(failure.Category))))
+			failure.StatusCodes = cloneStrings(failure.StatusCodes)
+			for statusIndex := range failure.StatusCodes {
+				failure.StatusCodes[statusIndex] = strings.ToLower(strings.TrimSpace(failure.StatusCodes[statusIndex]))
+			}
+			sort.Strings(failure.StatusCodes)
+		}
+		slices.SortStableFunc(constraint.PermittedFailures, func(left, right PermittedFailure) int {
+			return strings.Compare(left.ID, right.ID)
+		})
 	}
 	sort.SliceStable(result.Constraints, func(left, right int) bool {
 		return result.Constraints[left].ID < result.Constraints[right].ID
@@ -738,8 +752,19 @@ func cloneSelector(selector Selector) Selector {
 func cloneLoadEnvelope(envelope LoadEnvelope) LoadEnvelope {
 	result := envelope
 	result.Scope = cloneSelector(envelope.Scope)
-	result.Constraints = append([]LoadConstraint(nil), envelope.Constraints...)
+	result.Constraints = cloneLoadConstraints(envelope.Constraints)
 	result.ResponseTimes = append([]ResponseTimeObjective(nil), envelope.ResponseTimes...)
+	return result
+}
+
+func cloneLoadConstraints(constraints []LoadConstraint) []LoadConstraint {
+	result := append([]LoadConstraint(nil), constraints...)
+	for index := range result {
+		result[index].PermittedFailures = append([]PermittedFailure(nil), constraints[index].PermittedFailures...)
+		for failureIndex := range result[index].PermittedFailures {
+			result[index].PermittedFailures[failureIndex].StatusCodes = cloneStrings(constraints[index].PermittedFailures[failureIndex].StatusCodes)
+		}
+	}
 	return result
 }
 

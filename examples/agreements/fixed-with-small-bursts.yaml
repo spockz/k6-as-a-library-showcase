@@ -1,0 +1,30 @@
+# This example permits two-operation microbursts while keeping the sustained load near ten operations per second.
+agreements:
+  - consumer: lightly-bursty-client
+    provider: example-api
+    slo:
+      - endpoint:
+          host: localhost
+          method: GET
+          pathTemplate: /headers
+        loadConstraints:
+          - amount: 2
+            per-time-unit: 200ms
+          - amount: 570
+            per-time-unit: minute
+            permittedFailures:
+              - category: transport
+                amount: 5
+              - category: http_5xx
+                amount: 3
+              - category: functional
+                amount: 6
+                statusCodes: ["400", "404", "409", "422"]
+        responseTimes:
+          - statusCode: 200
+            mean: 100ms
+            median: 90ms
+            p99: 200ms
+            p100: 250ms
+          - statusCode: 5xx
+            p100: 250ms

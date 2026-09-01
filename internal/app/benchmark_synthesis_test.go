@@ -247,6 +247,14 @@ func TestExecutionPlanCompilesAgreementBeforeExecution(t *testing.T) {
             per-time-unit: ms
           - amount: 800
             per-time-unit: day
+            permittedFailures:
+              - category: transport
+                amount: 3
+              - category: http_5xx
+                amount: 4
+              - category: functional
+                amount: 8
+                statusCodes: [400, 409, 422]
         responseTimes:
           - statusCode: 200
             p100: 150ms
@@ -270,7 +278,14 @@ func TestExecutionPlanCompilesAgreementBeforeExecution(t *testing.T) {
 	if len(model.LoadRequirements) != 1 || model.LoadPlan.ExpectedStarts != 800 || model.LoadPlan.PeakConcurrentVUs != 800 || len(model.LoadPlan.Phases) != 2 {
 		t.Fatalf("unexpected agreement plan: %#v", model.LoadPlan)
 	}
-	if _, err := validated.ManifestJSON(); err != nil {
+	if len(model.LoadRequirements[0].Constraints[1].PermittedFailures) != 3 {
+		t.Fatalf("permitted failures were not preserved: %#v", model.LoadRequirements[0].Constraints[1])
+	}
+	manifest, err := validated.ManifestJSON()
+	if err != nil {
 		t.Fatalf("serialize agreement manifest: %v", err)
+	}
+	if !strings.Contains(string(manifest), `"category": "functional"`) || !strings.Contains(string(manifest), `"statusCodes": [`) {
+		t.Fatalf("agreement manifest omits permitted failure details: %s", manifest)
 	}
 }

@@ -544,6 +544,55 @@ func TestProvenanceKindsAreSourceDefined(t *testing.T) {
 	}
 }
 
+func TestPermittedFailureValidation(t *testing.T) {
+	valid := dsl.LoadConstraint{
+		ID: "per-minute", Amount: 600, Window: "1m", WindowKind: dsl.LoadWindowRolling, Unit: dsl.LoadUnitOperationStart,
+		PermittedFailures: []dsl.PermittedFailure{
+			{ID: "transport-errors", Category: dsl.FailureCategoryTransport, Amount: 2},
+			{ID: "server-errors", Category: dsl.FailureCategoryHTTP5xx, Amount: 3},
+			{ID: "functional-errors", Category: dsl.FailureCategoryFunctional, Amount: 6, StatusCodes: []string{"400", "4xx"}},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		mutate  func(*dsl.LoadConstraint)
+		wantErr string
+	}{
+		{name: "valid"},
+		{name: "negative amount", mutate: func(constraint *dsl.LoadConstraint) { constraint.PermittedFailures[0].Amount = -1 }, wantErr: "must not be negative"},
+		{name: "transport status codes excluded", mutate: func(constraint *dsl.LoadConstraint) { constraint.PermittedFailures[0].StatusCodes = []string{"504"} }, wantErr: "cannot declare status codes"},
+		{name: "functional 2xx excluded", mutate: func(constraint *dsl.LoadConstraint) { constraint.PermittedFailures[2].StatusCodes = []string{"204"} }, wantErr: "non-2xx, non-5xx"},
+		{name: "functional 5xx excluded", mutate: func(constraint *dsl.LoadConstraint) { constraint.PermittedFailures[2].StatusCodes = []string{"5xx"} }, wantErr: "non-2xx, non-5xx"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			constraint := valid
+			constraint.PermittedFailures = slices.Clone(valid.PermittedFailures)
+			for index := range constraint.PermittedFailures {
+				constraint.PermittedFailures[index].StatusCodes = slices.Clone(valid.PermittedFailures[index].StatusCodes)
+			}
+			if test.mutate != nil {
+				test.mutate(&constraint)
+			}
+			model := testBenchmark()
+			model.LoadRequirements = []dsl.LoadEnvelope{{
+				ID: "agreement", Scope: dsl.Selector{CaseIDs: []string{"case-a"}}, Constraints: []dsl.LoadConstraint{constraint},
+				ResponseTimes: []dsl.ResponseTimeObjective{{StatusCode: "200", P100: "250ms"}},
+				Source:        dsl.Provenance{Kind: "sla_agreement", Identifier: "client->api"},
+			}}
+			err := dsl.Validate(model)
+			if test.wantErr == "" && err != nil {
+				t.Fatalf("valid permitted failures rejected: %v", err)
+			}
+			if test.wantErr != "" && (err == nil || !strings.Contains(err.Error(), test.wantErr)) {
+				t.Fatalf("validation error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestPayloadBytesDecodeDeclaredEncoding(t *testing.T) {
 	t.Parallel()
 
