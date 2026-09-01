@@ -41,7 +41,6 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 	config.pactDirectory = pactFixtureDirectory()
 	config.virtualUsers = 1
 	config.iterations = 45
-	config.minIterationDuration = 100 * time.Millisecond
 	config.requestTimeout = time.Second
 	config.maxDuration = 10 * time.Second
 	config.jsonFilename = filepath.Join(directory, "metrics.json")
@@ -168,8 +167,8 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReports(t *testing.T) {
 	if got := failedThresholds[checkSeries]; len(got) != 1 || got[0] != pactResponsesValidThreshold {
 		t.Fatalf("Pact dashboard failed thresholds for %q = %v, want %q", checkSeries, got, pactResponsesValidThreshold)
 	}
-	if got := countDashboardReportEvents(dashboardEvents, "snapshot"); got < 2 {
-		t.Fatalf("Pact dashboard snapshots = %d, want multiple periodic snapshots", got)
+	if got := countDashboardReportEvents(dashboardEvents, "snapshot"); got < 1 {
+		t.Fatalf("Pact dashboard snapshots = %d, want a final snapshot", got)
 	}
 	combinedReport := mustReadFile(t, config.combinedFilename)
 	if err := validateGeneratedHTMLArtifact(config.combinedFilename); err != nil {

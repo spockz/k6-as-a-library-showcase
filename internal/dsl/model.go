@@ -9,7 +9,7 @@ import (
 
 const (
 	// CurrentSchemaVersion is the only benchmark manifest schema accepted by this version.
-	CurrentSchemaVersion = 2
+	CurrentSchemaVersion = 3
 )
 
 // Presence records whether a JSON field was absent, explicitly null, or held
@@ -30,16 +30,17 @@ const (
 
 // SynthesizedBenchmark is a versioned, target-independent benchmark assembled from input sources.
 type SynthesizedBenchmark struct {
-	SchemaVersion int           `json:"schemaVersion"`
-	ID            string        `json:"id"`
-	Baseline      LoadSpec      `json:"baseline"`
-	Cases         []Case        `json:"cases"`
-	Checks        []CheckSpec   `json:"checks,omitempty"`
-	Segments      []Segment     `json:"segments,omitempty"`
-	SegmentPolicy SegmentPolicy `json:"segmentPolicy"`
-	Thresholds    []Threshold   `json:"thresholds,omitempty"`
-	Report        ReportSpec    `json:"report"`
-	Provenance    []Provenance  `json:"provenance,omitempty"`
+	SchemaVersion    int            `json:"schemaVersion"`
+	ID               string         `json:"id"`
+	LoadRequirements []LoadEnvelope `json:"loadRequirements,omitempty"`
+	LoadPlan         LoadPlan       `json:"loadPlan"`
+	Cases            []Case         `json:"cases"`
+	Checks           []CheckSpec    `json:"checks,omitempty"`
+	Segments         []Segment      `json:"segments,omitempty"`
+	SegmentPolicy    SegmentPolicy  `json:"segmentPolicy"`
+	Thresholds       []Threshold    `json:"thresholds,omitempty"`
+	Report           ReportSpec     `json:"report"`
+	Provenance       []Provenance   `json:"provenance,omitempty"`
 }
 
 // Case is one independently selectable request and its expectations.
@@ -251,8 +252,8 @@ type CheckSpec struct {
 	ID      string     `json:"id"`
 	Name    string     `json:"name"`
 	Enabled bool       `json:"enabled"`
-	Scope   Selector   `json:"scope,omitempty"`
-	Source  Provenance `json:"source,omitempty"`
+	Scope   Selector   `json:"scope"`
+	Source  Provenance `json:"source"`
 }
 
 // Attribute is one named semantic or diagnostic value.
@@ -321,7 +322,6 @@ type Segment struct {
 	Start            Duration      `json:"start,omitempty"`
 	End              *Duration     `json:"end,omitempty"`
 	Selection        SelectionSpec `json:"selection"`
-	Load             LoadOverride  `json:"load,omitempty"`
 	Checks           CheckMode     `json:"checks"`
 	ActiveChecks     []string      `json:"activeChecks,omitempty"`
 	ActiveThresholds []string      `json:"activeThresholds,omitempty"`
@@ -351,23 +351,79 @@ type CaseWeight struct {
 	Weight float64 `json:"weight"`
 }
 
-// LoadSpec describes the benchmark's baseline load.
-type LoadSpec struct {
-	Kind          LoadKind `json:"kind"`
-	VUs           int64    `json:"vus,omitempty"`
-	Iterations    int64    `json:"iterations,omitempty"`
-	RatePerSecond float64  `json:"ratePerSecond,omitempty"`
-	Duration      Duration `json:"duration,omitempty"`
+// LoadEnvelope preserves one agreement's conjunctive rolling-window limits.
+type LoadEnvelope struct {
+	ID            string                  `json:"id"`
+	Scope         Selector                `json:"scope"`
+	Constraints   []LoadConstraint        `json:"constraints"`
+	ResponseTimes []ResponseTimeObjective `json:"responseTimes"`
+	Source        Provenance              `json:"source"`
 }
 
-// LoadOverride describes a segment load change. Factor and absolute fields
-// are mutually exclusive.
-type LoadOverride struct {
-	Factor        *float64  `json:"factor,omitempty"`
-	VUs           *int64    `json:"vus,omitempty"`
-	Iterations    *int64    `json:"iterations,omitempty"`
-	RatePerSecond *float64  `json:"ratePerSecond,omitempty"`
-	Duration      *Duration `json:"duration,omitempty"`
+// LoadConstraint limits logical operation starts in one rolling window.
+type LoadConstraint struct {
+	ID         string         `json:"id"`
+	Amount     int64          `json:"amount"`
+	Window     Duration       `json:"window"`
+	WindowKind LoadWindowKind `json:"windowKind"`
+	Unit       LoadUnit       `json:"unit"`
+}
+
+// ResponseTimeObjective preserves status-specific SLA timings used to size planned concurrency.
+type ResponseTimeObjective struct {
+	StatusCode string   `json:"statusCode"`
+	Mean       Duration `json:"mean,omitempty"`
+	Median     Duration `json:"median,omitempty"`
+	P99        Duration `json:"p99,omitempty"`
+	P100       Duration `json:"p100,omitempty"`
+}
+
+// LoadPlan is the complete deterministic schedule consumed by execution adapters.
+type LoadPlan struct {
+	PlannerVersion       string                    `json:"plannerVersion"`
+	RequirementDigest    string                    `json:"requirementDigest,omitempty"`
+	Strategy             LoadStrategy              `json:"strategy"`
+	LoadScalingFactor    string                    `json:"loadScalingFactor"`
+	Classification       LoadClassification        `json:"classification"`
+	Horizon              Duration                  `json:"horizon,omitempty"`
+	IterationDuration    Duration                  `json:"iterationDurationAssumption,omitempty"`
+	EffectiveConstraints []EffectiveLoadConstraint `json:"effectiveConstraints,omitempty"`
+	ExpectedStarts       int64                     `json:"expectedStarts"`
+	PeakConcurrentVUs    int64                     `json:"peakConcurrentVUs"`
+	Phases               []LoadPhase               `json:"phases"`
+	Assumptions          []string                  `json:"assumptions,omitempty"`
+}
+
+// EffectiveLoadConstraint records the exact scaled ceiling used by the planner.
+type EffectiveLoadConstraint struct {
+	EnvelopeID      string   `json:"envelopeId"`
+	ConstraintID    string   `json:"constraintId"`
+	OriginalAmount  int64    `json:"originalAmount"`
+	EffectiveAmount int64    `json:"effectiveAmount"`
+	Window          Duration `json:"window"`
+}
+
+// LoadPhase is one executor-ready portion of a load plan.
+type LoadPhase struct {
+	ID             string        `json:"id"`
+	Start          Duration      `json:"start"`
+	Duration       Duration      `json:"duration,omitempty"`
+	MaxDuration    Duration      `json:"maxDuration"`
+	Load           PlannedLoad   `json:"load"`
+	Selection      SelectionSpec `json:"selection"`
+	ConstraintIDs  []string      `json:"constraintIds,omitempty"`
+	ExpectedStarts int64         `json:"expectedStarts"`
+}
+
+// PlannedLoad maps without further rate calculation to a public executor.
+type PlannedLoad struct {
+	Kind            PlannedLoadKind `json:"kind"`
+	Amount          int64           `json:"amount,omitempty"`
+	TimeUnit        Duration        `json:"timeUnit,omitempty"`
+	Iterations      int64           `json:"iterations,omitempty"`
+	VUs             int64           `json:"vus,omitempty"`
+	PreAllocatedVUs int64           `json:"preAllocatedVUs,omitempty"`
+	MaxVUs          int64           `json:"maxVUs,omitempty"`
 }
 
 // Threshold is a structured objective that can be rendered by an execution
@@ -381,7 +437,7 @@ type Threshold struct {
 	Target         float64    `json:"target"`
 	Scope          Selector   `json:"scope"`
 	ActiveSegments []string   `json:"activeSegments,omitempty"`
-	Source         Provenance `json:"source,omitempty"`
+	Source         Provenance `json:"source"`
 }
 
 // Selector identifies cases, operations, or attributes to which a policy applies.
@@ -404,7 +460,11 @@ type Duration string
 type PayloadEncoding string
 type RedirectMode string
 type SelectionMode string
-type LoadKind string
+type LoadWindowKind string
+type LoadUnit string
+type LoadStrategy string
+type LoadClassification string
+type PlannedLoadKind string
 type CheckMode string
 type GapPolicy string
 
@@ -441,15 +501,18 @@ const (
 )
 
 const (
-	LoadSharedIterations LoadKind = "shared_iterations"
-	LoadConstantVUs      LoadKind = "constant_vus"
-	LoadArrivalRate      LoadKind = "arrival_rate"
-)
-
-const (
-	LoadKindSharedIterations = LoadSharedIterations
-	LoadKindConstantVUs      = LoadConstantVUs
-	LoadKindArrivalRate      = LoadArrivalRate
+	LoadWindowRolling                LoadWindowKind     = "rolling"
+	LoadUnitOperationStart           LoadUnit           = "operation_start"
+	LoadStrategyExplicit             LoadStrategy       = "explicit"
+	LoadStrategyMaximumStress        LoadStrategy       = "maximum_stress"
+	LoadClassificationExplicit       LoadClassification = "explicit"
+	LoadClassificationBelowAgreement LoadClassification = "below_agreement"
+	LoadClassificationAsAgreed       LoadClassification = "as_agreed"
+	LoadClassificationAboveAgreement LoadClassification = "above_agreement"
+	PlannedLoadSharedIterations      PlannedLoadKind    = "shared_iterations"
+	PlannedLoadBatch                 PlannedLoadKind    = "batch"
+	PlannedLoadConstantArrival       PlannedLoadKind    = "constant_arrival"
+	PlannedLoadConstantVUs           PlannedLoadKind    = "constant_vus"
 )
 
 const (

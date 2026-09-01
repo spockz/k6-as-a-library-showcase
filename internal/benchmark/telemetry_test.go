@@ -10,14 +10,15 @@ import (
 	"testing"
 	"time"
 
+	"k6-as-a-library/internal/dsl"
+	k6oteltrace "k6-as-a-library/internal/otel"
+	"k6-as-a-library/internal/pact"
+
 	"go.k6.io/k6/metrics"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	telemetrytrace "go.opentelemetry.io/otel/trace"
-	"k6-as-a-library/internal/dsl"
-	k6oteltrace "k6-as-a-library/internal/otel"
-	"k6-as-a-library/internal/pact"
 )
 
 func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T) {
@@ -70,7 +71,7 @@ func TestNativeTracingBuildsHierarchyPropagatesAndPreservesResults(t *testing.T)
 	}
 	mixed := execution.validated.Benchmark()
 	mixed.Cases = append(mixed.Cases, direct.Benchmark().Cases[0])
-	mixed.Baseline.Iterations = 3
+	mixed.LoadPlan = explicitTestLoadPlan(3)
 	validated, err := Compose(mixed)
 	if err != nil {
 		t.Fatalf("compose tracing benchmark: %v", err)
@@ -294,7 +295,7 @@ func pactTestExecution(interactions []pact.Interaction) (Execution, error) {
 	model := dsl.SynthesizedBenchmark{
 		SchemaVersion: dsl.CurrentSchemaVersion,
 		ID:            "native-go",
-		Baseline:      dsl.LoadSpec{Kind: dsl.LoadSharedIterations, VUs: 1, Iterations: int64(len(interactions))},
+		LoadPlan:      explicitTestLoadPlan(int64(len(interactions))),
 		Segments:      []dsl.Segment{{ID: "all", Start: dsl.Duration("0s"), Selection: dsl.SelectionSpec{Mode: dsl.SelectionRoundRobin}, Checks: dsl.CheckInherit}},
 		Provenance:    []dsl.Provenance{{Kind: "generated", Identifier: "native-go"}},
 	}

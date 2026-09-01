@@ -18,6 +18,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"k6-as-a-library/internal/dsl"
+	k6oteltrace "k6-as-a-library/internal/otel"
+
 	"github.com/sirupsen/logrus"
 	"go.k6.io/k6/lib"
 	"go.k6.io/k6/lib/netext"
@@ -25,8 +28,6 @@ import (
 	"go.k6.io/k6/metrics"
 	"go.opentelemetry.io/otel/trace"
 	"gopkg.in/guregu/null.v3"
-	"k6-as-a-library/internal/dsl"
-	k6oteltrace "k6-as-a-library/internal/otel"
 )
 
 type Execution struct {
@@ -240,6 +241,7 @@ func (vu *nativeVU) Activate(params *lib.VUActivationParams) lib.ActiveVU {
 		nativeVU: vu,
 		ctx:      params.RunContext,
 		busy:     make(chan struct{}, 1),
+		scenario: params.Scenario,
 	}
 	context.AfterFunc(params.RunContext, func() {
 		active.busy <- struct{}{}
@@ -253,8 +255,9 @@ func (vu *nativeVU) Activate(params *lib.VUActivationParams) lib.ActiveVU {
 
 type activeNativeVU struct {
 	*nativeVU
-	ctx  context.Context
-	busy chan struct{}
+	ctx      context.Context
+	busy     chan struct{}
+	scenario string
 }
 
 type PreparedRequest struct {
@@ -290,7 +293,7 @@ func (vu *activeNativeVU) RunOnce() error {
 		return errors.New("execute plan: validated execution plan is not initialized")
 	}
 	ordinal := vu.runner.nextCaseOrdinal.Add(1) - 1
-	selection, err := vu.runner.benchmark.validated.SelectAt(time.Since(vu.runner.executionStartedAt), ordinal)
+	selection, err := vu.runner.benchmark.validated.SelectPhase(vu.scenario, time.Since(vu.runner.executionStartedAt), ordinal)
 	if err != nil {
 		return fmt.Errorf("select execution case %d: %w", ordinal, err)
 	}
@@ -574,9 +577,7 @@ func responseSnapshot(response *httpext.Response) (*dsl.HTTPResponse, error) {
 		Cookies:    make(map[string][]dsl.ResponseCookie, len(response.Cookies)),
 		Body:       body,
 	}
-	for name, value := range response.Headers {
-		result.Headers[name] = value
-	}
+	maps.Copy(result.Headers, response.Headers)
 	for name, values := range response.Cookies {
 		result.Cookies[name] = make([]dsl.ResponseCookie, 0, len(values))
 		for _, value := range values {
@@ -635,18 +636,6 @@ func (vu *activeNativeVU) finishIteration(
 
 	iterationDuration := iterationEnded.Sub(iterationStarted)
 	vu.emitIterationMetrics(iterationEnded, iterationDuration, currentTags)
-	remaining := remainingIterationDuration(
-		vu.state.Options.MinIterationDuration.TimeDuration(),
-		iterationDuration,
-	)
-	if remaining > 0 {
-		timer := time.NewTimer(remaining)
-		defer timer.Stop()
-		select {
-		case <-timer.C:
-		case <-vu.ctx.Done():
-		}
-	}
 	return requestErr
 }
 
@@ -665,13 +654,6 @@ func joinRequestPath(basePath, requestPath string) string {
 		return "/" + requestPath
 	}
 	return strings.TrimRight(basePath, "/") + "/" + strings.TrimLeft(requestPath, "/")
-}
-
-func remainingIterationDuration(minimum, elapsed time.Duration) time.Duration {
-	if elapsed >= minimum {
-		return 0
-	}
-	return minimum - elapsed
 }
 
 func (vu *activeNativeVU) emitIterationMetrics(

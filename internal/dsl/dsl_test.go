@@ -438,8 +438,7 @@ func TestValidationReportsContextAndUnsupportedValues(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
-	var validation *dsl.ValidationError
-	if !errors.As(err, &validation) {
+	if _, ok := errors.AsType[*dsl.ValidationError](err); !ok {
 		t.Fatalf("expected typed validation error, got %T: %v", err, err)
 	}
 	message := err.Error()
@@ -584,11 +583,7 @@ func testBenchmark() dsl.SynthesizedBenchmark {
 	return dsl.SynthesizedBenchmark{
 		SchemaVersion: dsl.CurrentSchemaVersion,
 		ID:            "example",
-		Baseline: dsl.LoadSpec{
-			Kind:       dsl.LoadSharedIterations,
-			VUs:        1,
-			Iterations: 3,
-		},
+		LoadPlan:      dsl.LoadPlan{PlannerVersion: "test", Strategy: dsl.LoadStrategyExplicit, LoadScalingFactor: "1", Classification: dsl.LoadClassificationExplicit, ExpectedStarts: 3, PeakConcurrentVUs: 1, Phases: []dsl.LoadPhase{{ID: "native-go", Start: "0s", MaxDuration: "1m", ExpectedStarts: 3, Load: dsl.PlannedLoad{Kind: dsl.PlannedLoadSharedIterations, VUs: 1, Iterations: 3}, Selection: dsl.SelectionSpec{Mode: dsl.SelectionRoundRobin}}}},
 		Cases: []dsl.Case{
 			{
 				ID:   "case-a",

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -160,6 +161,14 @@ func validateReferences(input dsl.SynthesizedBenchmark) []error {
 	for _, threshold := range input.Thresholds {
 		thresholdByID[threshold.ID] = threshold
 	}
+	for _, envelope := range input.LoadRequirements {
+		context := dsl.Diagnostic{PlanID: input.ID, Source: envelope.Source.Locator, Field: "loadRequirements.scope"}
+		problems = append(problems, validateSelectorReferences(envelope.Scope, caseByID, operationByID, context, "scope")...)
+	}
+	for _, phase := range input.LoadPlan.Phases {
+		context := dsl.Diagnostic{PlanID: input.ID, SegmentID: phase.ID, Field: "loadPlan.phases.selection"}
+		problems = append(problems, validateSelectionReferences(phase.Selection, caseByID, context)...)
+	}
 	for _, segment := range input.Segments {
 		segmentByID[segment.ID] = segment
 	}
@@ -181,7 +190,7 @@ func validateReferences(input dsl.SynthesizedBenchmark) []error {
 		context := dsl.Diagnostic{PlanID: input.ID, ThresholdID: threshold.ID, Source: threshold.Source.Locator}
 		problems = append(problems, validateSelectorReferences(threshold.Scope, caseByID, operationByID, context, "scope")...)
 		for _, segmentID := range threshold.ActiveSegments {
-			if _, ok := segmentByID[segmentID]; !ok && !(segmentID == "default" && input.SegmentPolicy.Default == nil) {
+			if _, ok := segmentByID[segmentID]; !ok && (segmentID != "default" || input.SegmentPolicy.Default != nil) {
 				item := context
 				item.Field = "activeSegments"
 				item.SegmentID = segmentID
@@ -453,14 +462,25 @@ func selectedCases(all []dsl.Case, selection dsl.SelectionSpec) []dsl.Case {
 }
 
 func validateCapabilities(input dsl.SynthesizedBenchmark, capabilities Capabilities) error {
-	if input.Baseline.Kind == dsl.LoadSharedIterations && !capabilities.SharedIterations {
-		return capabilityError(input.ID, "baseline", "shared_iterations", "shared-iteration load is not supported")
-	}
-	if input.Baseline.Kind == dsl.LoadConstantVUs && !capabilities.ConstantVUs {
-		return capabilityError(input.ID, "baseline", "constant_vus", "constant VUs are not supported by this executor")
-	}
-	if input.Baseline.Kind == dsl.LoadArrivalRate && !capabilities.ArrivalRate {
-		return capabilityError(input.ID, "baseline", "arrival_rate", "arrival-rate load is not supported by this executor")
+	for _, phase := range input.LoadPlan.Phases {
+		switch phase.Load.Kind {
+		case dsl.PlannedLoadSharedIterations:
+			if !capabilities.SharedIterations {
+				return capabilityError(input.ID, "loadPlan.phases", "shared_iterations", "shared-iteration load is not supported")
+			}
+		case dsl.PlannedLoadBatch:
+			if !capabilities.Batch {
+				return capabilityError(input.ID, "loadPlan.phases", "batch", "batch load is not supported")
+			}
+		case dsl.PlannedLoadConstantArrival:
+			if !capabilities.ArrivalRate {
+				return capabilityError(input.ID, "loadPlan.phases", "constant_arrival", "constant-arrival load is not supported")
+			}
+		case dsl.PlannedLoadConstantVUs:
+			if !capabilities.ConstantVUs {
+				return capabilityError(input.ID, "loadPlan.phases", "constant_vus", "constant VUs are not supported")
+			}
+		}
 	}
 	for _, segment := range input.Segments {
 		if err := validateSegmentCapabilities(input.ID, segment, capabilities); err != nil {
@@ -487,28 +507,6 @@ func validateSegmentCapabilities(planID string, segment dsl.Segment, capabilitie
 	}
 	if (segment.Checks != dsl.CheckInherit || len(segment.ActiveChecks) > 0) && !capabilities.SegmentCheckActivation {
 		return capabilityErrorWithSegment(planID, segment.ID, "checks", "segment_checks", "segment check activation is not supported")
-	}
-	load := segment.Load
-	if load.Factor != nil {
-		if !capabilities.SegmentLoadOverrides {
-			return capabilityErrorWithSegment(planID, segment.ID, "load.factor", "segment_load_factor", "segment load factors are not supported by shared-iterations execution")
-		}
-	}
-	if load.VUs != nil {
-		if !capabilities.ConstantVUs || !capabilities.SegmentLoadOverrides {
-			return capabilityErrorWithSegment(planID, segment.ID, "load.vus", "dynamic_vus", "dynamic VU changes are not supported")
-		}
-	}
-	if load.RatePerSecond != nil {
-		if !capabilities.ArrivalRate || !capabilities.SegmentLoadOverrides {
-			return capabilityErrorWithSegment(planID, segment.ID, "load.ratePerSecond", "arrival_rate", "arrival-rate segment changes are not supported")
-		}
-	}
-	if load.Iterations != nil && !capabilities.SegmentLoadOverrides {
-		return capabilityErrorWithSegment(planID, segment.ID, "load.iterations", "segment_iterations", "segment iteration overrides are not supported")
-	}
-	if load.Duration != nil && !capabilities.SegmentLoadOverrides {
-		return capabilityErrorWithSegment(planID, segment.ID, "load.duration", "segment_duration", "segment duration overrides are not supported")
 	}
 	return nil
 }
@@ -633,6 +631,29 @@ func (validated ValidatedBenchmark) SelectAt(elapsed time.Duration, ordinal uint
 	return CaseSelection{Case: item, Segment: segment}, nil
 }
 
+// SelectPhase selects a case from an executor-ready load phase.
+func (validated ValidatedBenchmark) SelectPhase(phaseID string, elapsed time.Duration, ordinal uint64) (CaseSelection, error) {
+	for _, phase := range validated.value.LoadPlan.Phases {
+		if phase.ID != phaseID {
+			continue
+		}
+		segment, err := validated.SegmentAt(elapsed)
+		if err != nil {
+			return CaseSelection{}, err
+		}
+		segment.Selection = phase.Selection
+		item, err := validated.SelectCase(segment, ordinal)
+		if err != nil {
+			return CaseSelection{}, err
+		}
+		return CaseSelection{Case: item, Segment: segment}, nil
+	}
+	return CaseSelection{}, &ReferenceError{
+		Diagnostic: dsl.Diagnostic{Kind: dsl.ErrorReference, PlanID: validated.value.ID, Field: "loadPlan.phases"},
+		Reference:  phaseID,
+	}
+}
+
 type candidate struct {
 	item   dsl.Case
 	weight float64
@@ -735,12 +756,7 @@ func attributeValue(item dsl.Case, segment dsl.Segment, attributeName string) st
 }
 
 func containsString(values []string, wanted string) bool {
-	for _, value := range values {
-		if value == wanted {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, wanted)
 }
 
 func sourceForCase(item dsl.Case) dsl.Provenance {

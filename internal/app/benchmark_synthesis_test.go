@@ -5,13 +5,16 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
-	"go.k6.io/k6/lib/netext/httpext"
 	benchmarkpkg "k6-as-a-library/internal/benchmark"
 	"k6-as-a-library/internal/dsl"
+
+	"go.k6.io/k6/lib/netext/httpext"
 )
 
 func TestExecutionPlanMapsDirectAndPactSources(t *testing.T) {
@@ -223,7 +226,51 @@ func TestExecutionPlanRejectsInvalidSourceBeforeExecution(t *testing.T) {
 		t.Fatalf("create target: %v", err)
 	}
 	_, err = synthesizeBenchmark(config, target.GetURL(), nil)
-	if err == nil || !strings.Contains(err.Error(), "shared-iteration load requires positive VUs and iterations") {
+	if err == nil || !strings.Contains(err.Error(), "shared or batch load requires positive VUs and iterations") {
 		t.Fatalf("invalid source was not rejected before execution: %v", err)
+	}
+}
+
+func TestExecutionPlanCompilesAgreementBeforeExecution(t *testing.T) {
+	directory := t.TempDir()
+	filename := filepath.Join(directory, "agreements.yaml")
+	contents := `agreements:
+  - consumer: consumer
+    provider: provider
+    slo:
+      - endpoint:
+          host: provider.example
+          method: GET
+          pathTemplate: /foo/bar/{id}
+        loadConstraints:
+          - amount: 400
+            per-time-unit: ms
+          - amount: 800
+            per-time-unit: day
+        responseTimes:
+          - statusCode: 200
+            p100: 150ms
+`
+	if err := os.WriteFile(filename, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write agreements: %v", err)
+	}
+	config := defaultRunConfig()
+	config.agreementsFilename = filename
+	config.maxPlannedOperations = 800
+	config.generatorMaxVUs = 800
+	target, err := httpext.NewURL("http://provider.example/foo/bar/123", "direct")
+	if err != nil {
+		t.Fatalf("create target: %v", err)
+	}
+	validated, err := synthesizeBenchmark(config, target.GetURL(), nil)
+	if err != nil {
+		t.Fatalf("synthesize agreement plan: %v", err)
+	}
+	model := validated.Benchmark()
+	if len(model.LoadRequirements) != 1 || model.LoadPlan.ExpectedStarts != 800 || model.LoadPlan.PeakConcurrentVUs != 800 || len(model.LoadPlan.Phases) != 2 {
+		t.Fatalf("unexpected agreement plan: %#v", model.LoadPlan)
+	}
+	if _, err := validated.ManifestJSON(); err != nil {
+		t.Fatalf("serialize agreement manifest: %v", err)
 	}
 }

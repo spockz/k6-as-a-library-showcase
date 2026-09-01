@@ -2,8 +2,9 @@
 package app
 
 import (
-	"github.com/spf13/cobra"
 	benchmarkpkg "k6-as-a-library/internal/benchmark"
+
+	"github.com/spf13/cobra"
 )
 
 func NewRootCommand() *cobra.Command {
@@ -25,6 +26,10 @@ func newRunCommand() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			config.tracesOutputFlagSet = command.Flags().Changed("traces-output")
+			config.virtualUsersFlagSet = command.Flags().Changed("vus")
+			config.iterationsFlagSet = command.Flags().Changed("iterations")
+			config.loadScalingFactorFlagSet = command.Flags().Changed("load-scaling-factor")
+			config.maxDurationFlagSet = command.Flags().Changed("max-duration")
 			if err := config.validate(); err != nil {
 				return err
 			}
@@ -38,12 +43,10 @@ func newRunCommand() *cobra.Command {
 	flags.StringVar(&config.pactDirectory, "pacts-dir", config.pactDirectory, "directory containing PACT JSON files")
 	flags.Int64Var(&config.virtualUsers, "vus", config.virtualUsers, "number of virtual users")
 	flags.Int64Var(&config.iterations, "iterations", config.iterations, "total iterations shared by all VUs")
-	flags.DurationVar(
-		&config.minIterationDuration,
-		"min-iteration-duration",
-		config.minIterationDuration,
-		"minimum amount of time spent executing one iteration",
-	)
+	flags.StringVar(&config.agreementsFilename, "agreements", config.agreementsFilename, "SLA agreement YAML file used to generate maximum-stress load")
+	flags.StringVar(&config.loadScalingFactor, "load-scaling-factor", config.loadScalingFactor, "exact positive multiplier for agreement load amounts")
+	flags.Int64Var(&config.maxPlannedOperations, "max-planned-operations", config.maxPlannedOperations, "maximum operation starts accepted from an agreement plan")
+	flags.Int64Var(&config.generatorMaxVUs, "generator-max-vus", config.generatorMaxVUs, "maximum peak VUs accepted from an agreement plan")
 	flags.DurationVar(&config.requestTimeout, "request-timeout", config.requestTimeout, "HTTP request timeout")
 	flags.DurationVar(&config.maxDuration, "max-duration", config.maxDuration, "maximum test duration")
 	flags.StringVar(&config.jsonFilename, "json-output", config.jsonFilename, "JSON metrics output path")

@@ -1,10 +1,29 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "id": "example",
-  "baseline": {
-    "kind": "shared_iterations",
-    "vus": 1,
-    "iterations": 3
+  "loadPlan": {
+    "plannerVersion": "test",
+    "strategy": "explicit",
+    "loadScalingFactor": "1",
+    "classification": "explicit",
+    "expectedStarts": 3,
+    "peakConcurrentVUs": 1,
+    "phases": [
+      {
+        "id": "native-go",
+        "start": "0s",
+        "maxDuration": "1m0s",
+        "load": {
+          "kind": "shared_iterations",
+          "iterations": 3,
+          "vus": 1
+        },
+        "selection": {
+          "mode": "round_robin"
+        },
+        "expectedStarts": 3
+      }
+    ]
   },
   "cases": [
     {

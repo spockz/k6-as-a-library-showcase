@@ -80,7 +80,11 @@ func mergeBenchmarks(existing, incoming dsl.SynthesizedBenchmark, policy Conflic
 	if existing.SchemaVersion != incoming.SchemaVersion {
 		return dsl.SynthesizedBenchmark{}, conflict("schemaVersion", existingSource, incomingSource, policy, dsl.Diagnostic{PlanID: result.ID})
 	}
-	result.Baseline, err = chooseValue("baseline", existing.Baseline, incoming.Baseline, existingSource, incomingSource, policy, dsl.Diagnostic{PlanID: result.ID})
+	result.LoadRequirements, err = chooseValue("loadRequirements", existing.LoadRequirements, incoming.LoadRequirements, existingSource, incomingSource, policy, dsl.Diagnostic{PlanID: result.ID})
+	if err != nil {
+		return dsl.SynthesizedBenchmark{}, err
+	}
+	result.LoadPlan, err = chooseValue("loadPlan", existing.LoadPlan, incoming.LoadPlan, existingSource, incomingSource, policy, dsl.Diagnostic{PlanID: result.ID})
 	if err != nil {
 		return dsl.SynthesizedBenchmark{}, err
 	}

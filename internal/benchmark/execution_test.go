@@ -13,6 +13,10 @@ import (
 	"testing"
 	"time"
 
+	"k6-as-a-library/internal/dsl"
+	k6oteltrace "k6-as-a-library/internal/otel"
+	"k6-as-a-library/internal/pact"
+
 	"github.com/mccutchen/go-httpbin/v2/httpbin"
 	"github.com/sirupsen/logrus"
 	"go.k6.io/k6/lib"
@@ -21,9 +25,6 @@ import (
 	"go.k6.io/k6/lib/types"
 	"go.k6.io/k6/metrics"
 	"gopkg.in/guregu/null.v3"
-	"k6-as-a-library/internal/dsl"
-	k6oteltrace "k6-as-a-library/internal/otel"
-	"k6-as-a-library/internal/pact"
 )
 
 const intentionalPactMismatchInteraction = "expect status 300 from the status 200 endpoint"
@@ -329,81 +330,6 @@ func TestNativeVUCookiesAreIsolated(t *testing.T) {
 	}
 }
 
-func TestNativeVUMinIterationDurationEmitsMetricsBeforeCancellableWait(t *testing.T) {
-	harness := newNativeVUTestHarness(t, "http://example.test/headers", time.Minute)
-	harness.vu.state.Transport = roundTripFunc(successfulRoundTrip)
-	done := make(chan error, 1)
-	go func() {
-		done <- harness.vu.RunOnce()
-	}()
-
-	deadline := time.NewTimer(time.Second)
-	defer deadline.Stop()
-	var durationSample metrics.Sample
-	foundDuration := false
-	for !foundDuration {
-		select {
-		case container := <-harness.out:
-			for _, sample := range container.GetSamples() {
-				if sample.Metric.Name == metrics.IterationDurationName {
-					durationSample = sample
-					foundDuration = true
-					break
-				}
-			}
-		case err := <-done:
-			t.Fatalf("iteration returned before minimum-duration pacing: %v", err)
-		case <-deadline.C:
-			t.Fatal("iteration metrics were not emitted before pacing")
-		}
-	}
-
-	if durationSample.Value <= 0 || durationSample.Value >= metrics.D(time.Minute) {
-		t.Fatalf("iteration duration includes pacing: %f", durationSample.Value)
-	}
-	select {
-	case err := <-done:
-		t.Fatalf("iteration returned before cancellation: %v", err)
-	default:
-	}
-
-	harness.cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("cancel minimum-duration pacing: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("minimum-duration pacing did not stop after cancellation")
-	}
-}
-
-func TestRemainingIterationDuration(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		minimum  time.Duration
-		elapsed  time.Duration
-		expected time.Duration
-	}{
-		{name: "iteration is shorter", minimum: 100 * time.Millisecond, elapsed: 40 * time.Millisecond, expected: 60 * time.Millisecond},
-		{name: "iteration equals minimum", minimum: 100 * time.Millisecond, elapsed: 100 * time.Millisecond, expected: 0},
-		{name: "iteration exceeds minimum", minimum: 100 * time.Millisecond, elapsed: 150 * time.Millisecond, expected: 0},
-		{name: "minimum is disabled", minimum: 0, elapsed: 40 * time.Millisecond, expected: 0},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			actual := remainingIterationDuration(test.minimum, test.elapsed)
-			if actual != test.expected {
-				t.Fatalf("expected %s remaining, got %s", test.expected, actual)
-			}
-		})
-	}
-}
-
 type nativeVUTestHarness struct {
 	runner *Runner
 	vu     *activeNativeVU
@@ -416,10 +342,22 @@ type activeNativeVUTest struct {
 	cancel context.CancelFunc
 }
 
+func explicitTestLoadPlan(iterations int64) dsl.LoadPlan {
+	return dsl.LoadPlan{
+		PlannerVersion: "test", Strategy: dsl.LoadStrategyExplicit, LoadScalingFactor: "1",
+		Classification: dsl.LoadClassificationExplicit, ExpectedStarts: iterations, PeakConcurrentVUs: 1,
+		Phases: []dsl.LoadPhase{{
+			ID: "native-go", Start: "0s", MaxDuration: "1m", ExpectedStarts: iterations,
+			Load:      dsl.PlannedLoad{Kind: dsl.PlannedLoadSharedIterations, VUs: 1, Iterations: iterations},
+			Selection: dsl.SelectionSpec{Mode: dsl.SelectionRoundRobin},
+		}},
+	}
+}
+
 func newNativeVUTestHarness(
 	t *testing.T,
 	target string,
-	minIterationDuration time.Duration,
+	_ time.Duration,
 	traceProviders ...*k6oteltrace.Provider,
 ) nativeVUTestHarness {
 	t.Helper()
@@ -447,7 +385,7 @@ func newNativeVUTestHarness(
 	_, benchmarkSpan := traceProvider.StartBenchmarkSpan(t.Context(), k6oteltrace.BenchmarkAttributes{Name: "native-go"})
 	runner, err := NewRunner(RunnerConfig{
 		Logger:         logger,
-		Options:        NewRunnerOptions(minIterationDuration),
+		Options:        NewRunnerOptions(),
 		Resolver:       netext.NewResolver(net.LookupIP, 0, types.DNSfirst, types.DNSany),
 		BufferPool:     lib.NewBufferPool(),
 		BuiltinMetrics: builtin,
@@ -486,7 +424,7 @@ func directTestBenchmark(target *url.URL) (ValidatedBenchmark, error) {
 	return Compose(dsl.SynthesizedBenchmark{
 		SchemaVersion: dsl.CurrentSchemaVersion,
 		ID:            "native-go",
-		Baseline:      dsl.LoadSpec{Kind: dsl.LoadSharedIterations, VUs: 1, Iterations: 1},
+		LoadPlan:      explicitTestLoadPlan(1),
 		Cases: []dsl.Case{{
 			ID:        "direct-request",
 			Name:      "fixed request",

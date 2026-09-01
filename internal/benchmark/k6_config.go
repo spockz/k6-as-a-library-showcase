@@ -5,13 +5,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
+
+	"k6-as-a-library/internal/dsl"
 
 	"go.k6.io/k6/lib"
 	"go.k6.io/k6/lib/types"
 	"go.k6.io/k6/metrics"
 	"gopkg.in/guregu/null.v3"
-	"k6-as-a-library/internal/dsl"
 )
 
 const (
@@ -21,7 +21,7 @@ const (
 	ExpectedResponseSubmetric = "expected_response:true"
 )
 
-func NewRunnerOptions(minimumIterationDuration time.Duration) lib.Options {
+func NewRunnerOptions() lib.Options {
 	systemTags := metrics.DefaultSystemTagSet
 	return lib.Options{
 		DNS:                   types.DefaultDNSConfig(),
@@ -29,7 +29,6 @@ func NewRunnerOptions(minimumIterationDuration time.Duration) lib.Options {
 		Batch:                 null.IntFrom(defaultBatchSize),
 		BatchPerHost:          null.IntFrom(defaultBatchSizePerHost),
 		Throw:                 null.BoolFrom(false),
-		MinIterationDuration:  types.NullDurationFrom(minimumIterationDuration),
 		SystemTags:            &systemTags,
 		NoCookiesReset:        null.BoolFrom(false),
 		DiscardResponseBodies: null.BoolFrom(true),

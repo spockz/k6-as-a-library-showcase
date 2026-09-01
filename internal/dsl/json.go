@@ -51,16 +51,9 @@ func (benchmark *SynthesizedBenchmark) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("decode benchmark manifest into nil receiver")
 	}
 	fields, err := decodeObject(data, map[string]bool{
-		"schemaVersion": true,
-		"id":            true,
-		"baseline":      true,
-		"cases":         true,
-		"checks":        true,
-		"segments":      true,
-		"segmentPolicy": true,
-		"thresholds":    true,
-		"report":        true,
-		"provenance":    true,
+		"schemaVersion": true, "id": true, "loadRequirements": true, "loadPlan": true,
+		"cases": true, "checks": true, "segments": true, "segmentPolicy": true,
+		"thresholds": true, "report": true, "provenance": true,
 	})
 	if err != nil {
 		return err
@@ -75,7 +68,10 @@ func (benchmark *SynthesizedBenchmark) UnmarshalJSON(data []byte) error {
 	if err := decodeJSONField(fields, "id", &result.ID); err != nil {
 		return err
 	}
-	if err := decodeJSONField(fields, "baseline", &result.Baseline); err != nil {
+	if err := decodeJSONField(fields, "loadRequirements", &result.LoadRequirements); err != nil {
+		return err
+	}
+	if err := decodeJSONField(fields, "loadPlan", &result.LoadPlan); err != nil {
 		return err
 	}
 	if err := decodeJSONField(fields, "cases", &result.Cases); err != nil {
@@ -619,26 +615,18 @@ func (segment Segment) MarshalJSON() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	load := json.RawMessage(nil)
-	if !isZeroLoadOverride(segment.Load) {
-		load, err = json.Marshal(segment.Load)
-		if err != nil {
-			return nil, err
-		}
-	}
 	return json.Marshal(struct {
 		ID               string           `json:"id"`
 		Start            Duration         `json:"start,omitempty"`
 		End              *json.RawMessage `json:"end,omitempty"`
 		Selection        SelectionSpec    `json:"selection"`
-		Load             *json.RawMessage `json:"load,omitempty"`
 		Checks           CheckMode        `json:"checks"`
 		ActiveChecks     []string         `json:"activeChecks,omitempty"`
 		ActiveThresholds []string         `json:"activeThresholds,omitempty"`
 		Attributes       AttributeSet     `json:"attributes,omitempty"`
 	}{
 		ID: segment.ID, Start: segment.Start, End: rawMessagePointer(end), Selection: segment.Selection,
-		Load: rawMessagePointer(load), Checks: segment.Checks, ActiveChecks: segment.ActiveChecks,
+		Checks: segment.Checks, ActiveChecks: segment.ActiveChecks,
 		ActiveThresholds: segment.ActiveThresholds, Attributes: segment.Attributes,
 	})
 }
@@ -648,7 +636,7 @@ func (segment *Segment) UnmarshalJSON(data []byte) error {
 		return fmt.Errorf("decode segment into nil receiver")
 	}
 	fields, err := decodeObject(data, map[string]bool{
-		"id": true, "start": true, "end": true, "selection": true, "load": true,
+		"id": true, "start": true, "end": true, "selection": true,
 		"checks": true, "activeChecks": true, "activeThresholds": true, "attributes": true,
 	})
 	if err != nil {
@@ -668,9 +656,6 @@ func (segment *Segment) UnmarshalJSON(data []byte) error {
 		}
 	}
 	if err := decodeJSONField(fields, "selection", &result.Selection); err != nil {
-		return err
-	}
-	if err := decodeJSONField(fields, "load", &result.Load); err != nil {
 		return err
 	}
 	if err := decodeJSONField(fields, "checks", &result.Checks); err != nil {
@@ -885,7 +870,7 @@ func marshalOptionalPointer(value any, presence Presence) (json.RawMessage, erro
 	valueIsNil := value == nil
 	if !valueIsNil {
 		reflected := reflect.ValueOf(value)
-		valueIsNil = (reflected.Kind() == reflect.Ptr || reflected.Kind() == reflect.Interface) && reflected.IsNil()
+		valueIsNil = (reflected.Kind() == reflect.Pointer || reflected.Kind() == reflect.Interface) && reflected.IsNil()
 	}
 	if !valueIsNil {
 		encoded, err := json.Marshal(value)
@@ -1010,11 +995,6 @@ func decodeObject(data []byte, allowed map[string]bool) (map[string]json.RawMess
 		return nil, fmt.Errorf("unknown field %q", unknown[0])
 	}
 	return fields, nil
-}
-
-func isZeroLoadOverride(load LoadOverride) bool {
-	return load.Factor == nil && load.VUs == nil && load.Iterations == nil &&
-		load.RatePerSecond == nil && load.Duration == nil
 }
 
 func isZeroProvenance(source Provenance) bool {

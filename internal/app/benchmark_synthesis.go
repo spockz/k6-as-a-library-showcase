@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"net/url"
 
+	"k6-as-a-library/internal/agreement"
 	benchmarkpkg "k6-as-a-library/internal/benchmark"
 	"k6-as-a-library/internal/dsl"
 	"k6-as-a-library/internal/pact"
+	"k6-as-a-library/internal/planning"
 )
 
 const directCaseID = "direct-request"
@@ -21,11 +23,6 @@ func synthesizeBenchmark(config runConfig, targetURL *url.URL, interactions []pa
 	model := dsl.SynthesizedBenchmark{
 		SchemaVersion: dsl.CurrentSchemaVersion,
 		ID:            "native-go",
-		Baseline: dsl.LoadSpec{
-			Kind:       dsl.LoadSharedIterations,
-			VUs:        config.virtualUsers,
-			Iterations: config.iterations,
-		},
 		Segments: []dsl.Segment{{
 			ID:        "all",
 			Start:     dsl.Duration("0s"),
@@ -54,6 +51,24 @@ func synthesizeBenchmark(config runConfig, targetURL *url.URL, interactions []pa
 			model.Provenance = append(model.Provenance, item.Source)
 		}
 		model.Thresholds = pact.Thresholds()
+	}
+	if config.agreementsFilename == "" {
+		model.LoadPlan = planning.Explicit(config.virtualUsers, config.iterations, config.maxDuration)
+	} else {
+		adapted, err := agreement.Load(config.agreementsFilename, model.Cases)
+		if err != nil {
+			return benchmarkpkg.ValidatedBenchmark{}, err
+		}
+		model.LoadRequirements = adapted.Requirements
+		model.LoadPlan, err = planning.MaximumStress(model.LoadRequirements, planning.Options{
+			LoadScalingFactor:    config.loadScalingFactor,
+			MaxPlannedOperations: config.maxPlannedOperations,
+			GeneratorMaxVUs:      config.generatorMaxVUs,
+		})
+		if err != nil {
+			return benchmarkpkg.ValidatedBenchmark{}, err
+		}
+		model.Provenance = append(model.Provenance, adapted.Requirements[0].Source)
 	}
 
 	validated, err := benchmarkpkg.Compose(model)

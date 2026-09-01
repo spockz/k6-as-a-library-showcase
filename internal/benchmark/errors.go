@@ -35,12 +35,12 @@ type ComposeOptions struct {
 // Capabilities describes the executor behavior available to a plan boundary.
 type Capabilities struct {
 	SharedIterations       bool
+	Batch                  bool
 	ConstantVUs            bool
 	ArrivalRate            bool
 	RoundRobinSelection    bool
 	WeightedSelection      bool
 	SegmentCheckActivation bool
-	SegmentLoadOverrides   bool
 	SegmentDefaults        bool
 }
 
@@ -48,6 +48,7 @@ type Capabilities struct {
 func DefaultCapabilities() Capabilities {
 	return Capabilities{
 		SharedIterations:       true,
+		Batch:                  true,
 		RoundRobinSelection:    true,
 		WeightedSelection:      true,
 		SegmentCheckActivation: true,

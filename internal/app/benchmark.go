@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/url"
 	"os"
@@ -13,24 +14,27 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/sirupsen/logrus"
-	"go.k6.io/k6/lib/fsext"
-	"go.k6.io/k6/metrics"
-	"go.k6.io/k6/output"
 	"k6-as-a-library/internal/artifact"
 	benchmarkpkg "k6-as-a-library/internal/benchmark"
 	"k6-as-a-library/internal/k6output"
 	"k6-as-a-library/internal/pact"
 	"k6-as-a-library/internal/report"
+
+	"github.com/sirupsen/logrus"
+	"go.k6.io/k6/lib/fsext"
+	"go.k6.io/k6/metrics"
+	"go.k6.io/k6/output"
 )
 
 const (
 	defaultTargetURL                 = "http://localhost:8080/headers"
 	defaultVirtualUsers              = int64(1)
 	defaultIterations                = int64(10000)
-	defaultMinIterationDuration      = 25 * time.Millisecond
 	defaultRequestTimeout            = 10 * time.Second
 	defaultMaxDuration               = 300 * time.Second
+	defaultLoadScalingFactor         = "1"
+	defaultMaxPlannedOperations      = int64(1_000_000)
+	defaultGeneratorMaxVUs           = int64(10_000)
 	defaultJSONFilename              = "metrics.json"
 	defaultHTMLFilename              = "report.html"
 	defaultDashboardFilename         = ""
@@ -47,9 +51,16 @@ type runConfig struct {
 	pactDirectory             string
 	virtualUsers              int64
 	iterations                int64
-	minIterationDuration      time.Duration
+	virtualUsersFlagSet       bool
+	iterationsFlagSet         bool
+	agreementsFilename        string
+	loadScalingFactor         string
+	loadScalingFactorFlagSet  bool
+	maxPlannedOperations      int64
+	generatorMaxVUs           int64
 	requestTimeout            time.Duration
 	maxDuration               time.Duration
+	maxDurationFlagSet        bool
 	jsonFilename              string
 	htmlFilename              string
 	dashboardFilename         string
@@ -73,7 +84,9 @@ func defaultRunConfig() runConfig {
 		pactDirectory:             "",
 		virtualUsers:              defaultVirtualUsers,
 		iterations:                defaultIterations,
-		minIterationDuration:      defaultMinIterationDuration,
+		loadScalingFactor:         defaultLoadScalingFactor,
+		maxPlannedOperations:      defaultMaxPlannedOperations,
+		generatorMaxVUs:           defaultGeneratorMaxVUs,
 		requestTimeout:            defaultRequestTimeout,
 		maxDuration:               defaultMaxDuration,
 		jsonFilename:              defaultJSONFilename,
@@ -107,14 +120,27 @@ func (config runConfig) validate() error {
 	} else if err := validateHTTPURL("HTTP endpoint", config.targetURL); err != nil {
 		return err
 	}
-	if config.virtualUsers <= 0 {
-		return fmt.Errorf("VUs must be greater than zero")
-	}
-	if config.iterations < config.virtualUsers {
-		return fmt.Errorf("iterations must be greater than or equal to VUs")
-	}
-	if config.minIterationDuration < 0 {
-		return fmt.Errorf("minimum iteration duration must not be negative")
+	if config.agreementsFilename != "" {
+		if config.virtualUsersFlagSet || config.iterationsFlagSet || config.maxDurationFlagSet {
+			return fmt.Errorf("vus, iterations, and max-duration cannot be used with agreements")
+		}
+		if config.maxPlannedOperations <= 0 || config.generatorMaxVUs <= 0 {
+			return fmt.Errorf("agreement planner safety limits must be greater than zero")
+		}
+		factor, ok := new(big.Rat).SetString(config.loadScalingFactor)
+		if !ok || factor.Sign() <= 0 {
+			return fmt.Errorf("load scaling factor must be an exact positive number")
+		}
+	} else {
+		if config.loadScalingFactorFlagSet {
+			return fmt.Errorf("load-scaling-factor requires agreements")
+		}
+		if config.virtualUsers <= 0 {
+			return fmt.Errorf("VUs must be greater than zero")
+		}
+		if config.iterations < config.virtualUsers {
+			return fmt.Errorf("iterations must be greater than or equal to VUs")
+		}
 	}
 	if config.requestTimeout <= 0 {
 		return fmt.Errorf("request timeout must be greater than zero")
@@ -262,16 +288,14 @@ func run(ctx context.Context, config runConfig, stdout, stderr io.Writer) (runEr
 	}()
 
 	engine, err := benchmarkpkg.NewEngine(ctx, benchmarkpkg.EngineConfig{
-		Logger:                   logger,
-		TargetURL:                executionTarget,
-		ExactTarget:              len(interactions) == 0,
-		RequestTimeout:           config.requestTimeout,
-		MinimumIterationDuration: config.minIterationDuration,
-		MaximumDuration:          config.maxDuration,
-		Benchmark:                execution,
-		Samples:                  out,
-		TraceProvider:            traceProvider,
-		BenchmarkSpan:            benchmarkSpan,
+		Logger:         logger,
+		TargetURL:      executionTarget,
+		ExactTarget:    len(interactions) == 0,
+		RequestTimeout: config.requestTimeout,
+		Benchmark:      execution,
+		Samples:        out,
+		TraceProvider:  traceProvider,
+		BenchmarkSpan:  benchmarkSpan,
 	})
 	if err != nil {
 		return err

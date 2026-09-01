@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"regexp"
+	"sort"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -74,7 +77,8 @@ func Validate(p SynthesizedBenchmark) error {
 	if err := validateIdentifier(normalized.ID, "plan ID"); err != nil {
 		collector.add(Diagnostic{Field: "id"}, "%v", err)
 	}
-	validateLoadSpec(&collector, "baseline", normalized.Baseline)
+	validateLoadRequirements(&collector, normalized.LoadRequirements)
+	validateLoadPlan(&collector, normalized.LoadPlan)
 	if len(normalized.Cases) == 0 {
 		collector.add(Diagnostic{Field: "cases"}, "at least one case is required")
 	}
@@ -537,7 +541,6 @@ func validateSegment(collector *validationCollector, segment Segment, context Di
 	validateStringSet(collector, segment.ActiveChecks, context, "activeChecks")
 	validateStringSet(collector, segment.ActiveThresholds, context, "activeThresholds")
 	validateAttributes(collector, segment.Attributes, context, "attributes")
-	validateLoadOverride(collector, segment.Load, context)
 }
 
 func validateSelection(collector *validationCollector, selection SelectionSpec, context Diagnostic) {
@@ -580,84 +583,236 @@ func validateSelection(collector *validationCollector, selection SelectionSpec, 
 	}
 }
 
-func validateLoadSpec(collector *validationCollector, field string, load LoadSpec) {
-	context := Diagnostic{Field: field}
-	switch load.Kind {
-	case LoadSharedIterations:
-		if load.VUs <= 0 || load.Iterations <= 0 {
-			collector.add(context, "shared-iteration load requires positive VUs and iterations")
+func validateLoadRequirements(collector *validationCollector, envelopes []LoadEnvelope) {
+	seen := make(map[string]bool, len(envelopes))
+	allConstraintIDs := make(map[string]bool)
+	for envelopeIndex, envelope := range envelopes {
+		context := Diagnostic{Field: fmt.Sprintf("loadRequirements[%d]", envelopeIndex), Source: envelope.Source.Locator}
+		if err := validateIdentifier(envelope.ID, "load envelope ID"); err != nil {
+			collector.add(context, "%v", err)
 		}
-		if load.RatePerSecond != 0 {
-			collector.addKind(ErrorConflict, context, "shared-iteration load cannot also set ratePerSecond")
+		if seen[envelope.ID] {
+			collector.addKind(ErrorDuplicate, context, "duplicate load envelope ID %q", envelope.ID)
 		}
-	case LoadConstantVUs:
-		if load.VUs <= 0 {
-			collector.add(context, "constant-VU load requires positive VUs")
+		seen[envelope.ID] = true
+		validateSelector(collector, envelope.Scope, context, "scope")
+		validateProvenance(collector, envelope.Source, context)
+		if len(envelope.Constraints) == 0 {
+			collector.add(context, "load envelope requires at least one constraint")
 		}
-		if load.Iterations != 0 || load.RatePerSecond != 0 {
-			collector.addKind(ErrorConflict, context, "constant-VU load cannot set iterations or ratePerSecond")
+		for objectiveIndex, objective := range envelope.ResponseTimes {
+			objectiveContext := context
+			objectiveContext.Field = fmt.Sprintf("loadRequirements[%d].responseTimes[%d]", envelopeIndex, objectiveIndex)
+			if objective.StatusCode == "" {
+				collector.add(objectiveContext, "response-time status code is required")
+			}
+			values := []struct {
+				name  string
+				value Duration
+			}{{"mean", objective.Mean}, {"median", objective.Median}, {"p99", objective.P99}, {"p100", objective.P100}}
+			for _, item := range values {
+				name, value := item.name, item.value
+				if value == "" {
+					continue
+				}
+				if parsed, err := value.Parse(); err != nil || parsed <= 0 {
+					field := objectiveContext
+					field.Field += "." + name
+					collector.add(field, "response-time objective must be a positive duration")
+				}
+			}
 		}
-	case LoadArrivalRate:
-		if !finitePositive(load.RatePerSecond) {
-			collector.add(context, "arrival-rate load requires a finite positive ratePerSecond")
+		constraintIDs := make(map[string]bool, len(envelope.Constraints))
+		for constraintIndex, constraint := range envelope.Constraints {
+			constraintContext := context
+			constraintContext.Field = fmt.Sprintf("loadRequirements[%d].constraints[%d]", envelopeIndex, constraintIndex)
+			if err := validateIdentifier(constraint.ID, "load constraint ID"); err != nil {
+				collector.add(constraintContext, "%v", err)
+			}
+			if constraintIDs[constraint.ID] {
+				collector.addKind(ErrorDuplicate, constraintContext, "duplicate load constraint ID %q", constraint.ID)
+			}
+			if !constraintIDs[constraint.ID] && allConstraintIDs[constraint.ID] {
+				collector.addKind(ErrorDuplicate, constraintContext, "load constraint ID %q must be unique across envelopes", constraint.ID)
+			}
+			constraintIDs[constraint.ID] = true
+			allConstraintIDs[constraint.ID] = true
+			if constraint.Amount <= 0 {
+				collector.add(constraintContext, "load constraint amount must be greater than zero")
+			}
+			if window, err := constraint.Window.Parse(); err != nil || window <= 0 {
+				collector.add(constraintContext, "load constraint window must be a positive duration")
+			}
+			if constraint.WindowKind != LoadWindowRolling {
+				collector.add(constraintContext, "unsupported load window kind %q", constraint.WindowKind)
+			}
+			if constraint.Unit != LoadUnitOperationStart {
+				collector.add(constraintContext, "unsupported load unit %q", constraint.Unit)
+			}
 		}
-		if load.VUs != 0 || load.Iterations != 0 {
-			collector.addKind(ErrorConflict, context, "arrival-rate load cannot set VUs or iterations")
-		}
-	default:
-		collector.add(context, "unknown load kind %q", load.Kind)
-	}
-	if load.Duration != "" {
-		value, err := load.Duration.Parse()
-		if err != nil || value <= 0 {
-			collector.add(context, "load duration must be a positive duration")
-		}
-	}
-	if !finiteNonNegative(load.RatePerSecond) {
-		collector.add(context, "ratePerSecond must be finite and non-negative")
 	}
 }
 
-func validateLoadOverride(collector *validationCollector, load LoadOverride, context Diagnostic) {
-	abs := 0
-	if load.VUs != nil {
-		abs++
+func validateLoadPlan(collector *validationCollector, plan LoadPlan) {
+	context := Diagnostic{Field: "loadPlan"}
+	if plan.PlannerVersion == "" {
+		collector.add(context, "planner version is required")
 	}
-	if load.Iterations != nil {
-		abs++
+	if plan.Strategy != LoadStrategyExplicit && plan.Strategy != LoadStrategyMaximumStress {
+		collector.add(context, "unsupported load strategy %q", plan.Strategy)
 	}
-	if load.RatePerSecond != nil {
-		abs++
+	factor, ok := new(big.Rat).SetString(plan.LoadScalingFactor)
+	if !ok || factor.Sign() <= 0 {
+		collector.add(context, "load scaling factor must be an exact positive number")
 	}
-	if load.Duration != nil {
-		abs++
+	if plan.ExpectedStarts <= 0 || plan.PeakConcurrentVUs <= 0 || len(plan.Phases) == 0 {
+		collector.add(context, "load plan requires positive expected starts, peak VUs, and at least one phase")
 	}
-	if load.Factor != nil && abs > 0 {
-		context.Field = "load"
-		collector.addKind(ErrorConflict, context, "load factor cannot be combined with absolute overrides")
-	}
-	if load.Factor != nil && !finitePositive(*load.Factor) {
-		context.Field = "load.factor"
-		collector.add(context, "load factor must be finite and greater than zero")
-	}
-	if load.VUs != nil && *load.VUs <= 0 {
-		context.Field = "load.vus"
-		collector.add(context, "load VUs must be greater than zero")
-	}
-	if load.Iterations != nil && *load.Iterations <= 0 {
-		context.Field = "load.iterations"
-		collector.add(context, "load iterations must be greater than zero")
-	}
-	if load.RatePerSecond != nil && !finitePositive(*load.RatePerSecond) {
-		context.Field = "load.ratePerSecond"
-		collector.add(context, "load ratePerSecond must be finite and greater than zero")
-	}
-	if load.Duration != nil {
-		value, err := load.Duration.Parse()
-		if err != nil || value <= 0 {
-			context.Field = "load.duration"
-			collector.add(context, "load duration must be positive")
+	phaseIDs := make(map[string]bool, len(plan.Phases))
+	constraintIDs := make(map[string]bool, len(plan.EffectiveConstraints))
+	for index, constraint := range plan.EffectiveConstraints {
+		effectiveContext := Diagnostic{Field: fmt.Sprintf("loadPlan.effectiveConstraints[%d]", index)}
+		if err := validateIdentifier(constraint.EnvelopeID, "effective constraint envelope ID"); err != nil {
+			collector.add(effectiveContext, "%v", err)
 		}
+		if err := validateIdentifier(constraint.ConstraintID, "effective constraint ID"); err != nil {
+			collector.add(effectiveContext, "%v", err)
+		}
+		if constraint.EnvelopeID == "" || constraint.ConstraintID == "" || constraint.OriginalAmount <= 0 || constraint.EffectiveAmount <= 0 {
+			collector.add(effectiveContext, "effective constraint requires IDs and positive original and effective amounts")
+		}
+		if window, err := constraint.Window.Parse(); err != nil || window <= 0 {
+			collector.add(effectiveContext, "effective constraint window must be a positive duration")
+		}
+		if constraintIDs[constraint.ConstraintID] {
+			collector.addKind(ErrorDuplicate, effectiveContext, "duplicate effective constraint ID %q", constraint.ConstraintID)
+		}
+		constraintIDs[constraint.ConstraintID] = true
+	}
+	var total int64
+	for index, phase := range plan.Phases {
+		phaseContext := Diagnostic{Field: fmt.Sprintf("loadPlan.phases[%d]", index)}
+		if err := validateIdentifier(phase.ID, "load phase ID"); err != nil {
+			collector.add(phaseContext, "%v", err)
+		}
+		if phaseIDs[phase.ID] {
+			collector.addKind(ErrorDuplicate, phaseContext, "duplicate load phase ID %q", phase.ID)
+		}
+		phaseIDs[phase.ID] = true
+		if start, err := phase.Start.Parse(); err != nil || start < 0 {
+			collector.add(phaseContext, "load phase start must be a non-negative duration")
+		}
+		if maximum, err := phase.MaxDuration.Parse(); err != nil || maximum <= 0 {
+			collector.add(phaseContext, "load phase maxDuration must be a positive duration")
+		}
+		if phase.Duration != "" {
+			if duration, err := phase.Duration.Parse(); err != nil || duration <= 0 {
+				collector.add(phaseContext, "load phase duration must be a positive duration")
+			}
+		}
+		for _, constraintID := range phase.ConstraintIDs {
+			if !constraintIDs[constraintID] {
+				collector.add(phaseContext, "load phase references unknown effective constraint %q", constraintID)
+			}
+		}
+		validateSelection(collector, phase.Selection, phaseContext)
+		validatePlannedLoad(collector, phase.Load, phase.ExpectedStarts, phaseContext)
+		if phase.ExpectedStarts <= 0 {
+			collector.add(phaseContext, "load phase expectedStarts must be greater than zero")
+		}
+		total += phase.ExpectedStarts
+	}
+	if total != plan.ExpectedStarts {
+		collector.add(context, "load phase starts total %d does not equal expectedStarts %d", total, plan.ExpectedStarts)
+	}
+	if plan.Strategy == LoadStrategyMaximumStress {
+		validateMaximumStressPlan(collector, plan, factor)
+	} else if plan.Strategy == LoadStrategyExplicit && plan.Classification != LoadClassificationExplicit {
+		collector.add(context, "explicit load strategy requires explicit classification")
+	}
+}
+
+func validateMaximumStressPlan(collector *validationCollector, plan LoadPlan, factor *big.Rat) {
+	context := Diagnostic{Field: "loadPlan"}
+	if plan.RequirementDigest == "" || len(plan.EffectiveConstraints) == 0 {
+		collector.add(context, "maximum-stress load requires a requirement digest and effective constraints")
+	}
+	horizon, horizonErr := plan.Horizon.Parse()
+	iterationDuration, iterationErr := plan.IterationDuration.Parse()
+	if horizonErr != nil || horizon <= 0 || iterationErr != nil || iterationDuration <= 0 {
+		collector.add(context, "maximum-stress load requires positive horizon and iteration duration assumption")
+		return
+	}
+	if factor != nil {
+		want := LoadClassificationAsAgreed
+		if factor.Cmp(big.NewRat(1, 1)) < 0 {
+			want = LoadClassificationBelowAgreement
+		}
+		if factor.Cmp(big.NewRat(1, 1)) > 0 {
+			want = LoadClassificationAboveAgreement
+		}
+		if plan.Classification != want {
+			collector.add(context, "load classification %q does not match scaling factor", plan.Classification)
+		}
+	}
+	type loadEvent struct {
+		at     time.Duration
+		delta  int64
+		ending bool
+	}
+	var events []loadEvent
+	for index, phase := range plan.Phases {
+		phaseContext := Diagnostic{Field: fmt.Sprintf("loadPlan.phases[%d]", index)}
+		if phase.Load.Kind != PlannedLoadBatch {
+			collector.add(phaseContext, "maximum-stress phases must use batch load")
+		}
+		maximum, maximumErr := phase.MaxDuration.Parse()
+		duration, durationErr := phase.Duration.Parse()
+		if maximumErr == nil && durationErr == nil && (maximum != iterationDuration || duration != iterationDuration) {
+			collector.add(phaseContext, "maximum-stress phase duration and maxDuration must equal the iteration duration assumption")
+		}
+		start, startErr := phase.Start.Parse()
+		if startErr == nil {
+			events = append(events, loadEvent{start, phase.Load.VUs, false}, loadEvent{start + iterationDuration, -phase.Load.VUs, true})
+		}
+	}
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].at != events[j].at {
+			return events[i].at < events[j].at
+		}
+		return events[i].ending && !events[j].ending
+	})
+	var current, peak int64
+	for _, event := range events {
+		current += event.delta
+		if current > peak {
+			peak = current
+		}
+	}
+	if peak != plan.PeakConcurrentVUs {
+		collector.add(context, "derived peak VUs %d does not equal peakConcurrentVUs %d", peak, plan.PeakConcurrentVUs)
+	}
+}
+
+func validatePlannedLoad(collector *validationCollector, load PlannedLoad, expected int64, context Diagnostic) {
+	switch load.Kind {
+	case PlannedLoadSharedIterations, PlannedLoadBatch:
+		if load.VUs <= 0 || load.Iterations <= 0 || load.Iterations != expected {
+			collector.add(context, "shared or batch load requires positive VUs and iterations equal to expectedStarts")
+		}
+	case PlannedLoadConstantArrival:
+		if load.Amount <= 0 || load.PreAllocatedVUs <= 0 || load.MaxVUs < load.PreAllocatedVUs {
+			collector.add(context, "constant-arrival load requires a positive amount and valid VU capacity")
+		}
+		if unit, err := load.TimeUnit.Parse(); err != nil || unit <= 0 {
+			collector.add(context, "constant-arrival timeUnit must be positive")
+		}
+	case PlannedLoadConstantVUs:
+		if load.VUs <= 0 {
+			collector.add(context, "constant-VU load requires positive VUs")
+		}
+	default:
+		collector.add(context, "unsupported planned load kind %q", load.Kind)
 	}
 }
 
@@ -963,8 +1118,4 @@ func allDigits(value string) bool {
 
 func finitePositive(value float64) bool {
 	return !math.IsNaN(value) && !math.IsInf(value, 0) && value > 0
-}
-
-func finiteNonNegative(value float64) bool {
-	return !math.IsNaN(value) && !math.IsInf(value, 0) && value >= 0
 }

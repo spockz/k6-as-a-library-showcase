@@ -24,6 +24,7 @@ require (
 	golang.org/x/net v0.56.0
 	google.golang.org/grpc v1.82.1
 	gopkg.in/guregu/null.v3 v3.3.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

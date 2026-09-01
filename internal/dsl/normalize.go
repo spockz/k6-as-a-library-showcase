@@ -38,8 +38,13 @@ func (threshold Threshold) Clone() Threshold {
 func (p SynthesizedBenchmark) Normalize() SynthesizedBenchmark {
 	normalized := cloneSynthesizedBenchmark(p)
 	normalized.ID = strings.TrimSpace(normalized.ID)
-	normalized.Baseline.Kind = LoadKind(strings.ToLower(strings.TrimSpace(string(normalized.Baseline.Kind))))
-	normalized.Baseline.Duration = normalizeDurationValue(normalized.Baseline.Duration)
+	normalized.LoadPlan = normalizeLoadPlan(normalized.LoadPlan)
+	for index := range normalized.LoadRequirements {
+		normalized.LoadRequirements[index] = normalizeLoadEnvelope(normalized.LoadRequirements[index])
+	}
+	sort.SliceStable(normalized.LoadRequirements, func(left, right int) bool {
+		return normalized.LoadRequirements[left].ID < normalized.LoadRequirements[right].ID
+	})
 	normalized.Report = normalizeReport(normalized.Report)
 	normalized.SegmentPolicy = normalizeSegmentPolicy(normalized.SegmentPolicy)
 
@@ -389,7 +394,6 @@ func normalizeSegment(segment Segment) Segment {
 	result.ActiveThresholds = cloneStrings(result.ActiveThresholds)
 	sort.Strings(result.ActiveThresholds)
 	result.Attributes = normalizeAttributes(result.Attributes)
-	result.Load = normalizeLoadOverride(result.Load)
 	return result
 }
 
@@ -413,13 +417,77 @@ func normalizeSegmentPolicy(policy SegmentPolicy) SegmentPolicy {
 	return result
 }
 
-func normalizeLoadOverride(load LoadOverride) LoadOverride {
-	result := load
-	if result.Duration != nil {
-		duration := normalizeDurationValue(*result.Duration)
-		result.Duration = &duration
+func normalizeLoadEnvelope(envelope LoadEnvelope) LoadEnvelope {
+	result := envelope
+	result.ID = strings.TrimSpace(result.ID)
+	result.Scope = normalizeSelector(result.Scope)
+	result.Source = normalizeProvenance(result.Source)
+	result.Constraints = append([]LoadConstraint(nil), envelope.Constraints...)
+	result.ResponseTimes = append([]ResponseTimeObjective(nil), envelope.ResponseTimes...)
+	for index := range result.ResponseTimes {
+		objective := &result.ResponseTimes[index]
+		objective.StatusCode = strings.TrimSpace(objective.StatusCode)
+		objective.Mean = normalizeDurationValue(objective.Mean)
+		objective.Median = normalizeDurationValue(objective.Median)
+		objective.P99 = normalizeDurationValue(objective.P99)
+		objective.P100 = normalizeDurationValue(objective.P100)
 	}
+	for index := range result.Constraints {
+		constraint := &result.Constraints[index]
+		constraint.ID = strings.TrimSpace(constraint.ID)
+		constraint.Window = normalizeDurationValue(constraint.Window)
+		constraint.WindowKind = LoadWindowKind(strings.ToLower(strings.TrimSpace(string(constraint.WindowKind))))
+		constraint.Unit = LoadUnit(strings.ToLower(strings.TrimSpace(string(constraint.Unit))))
+	}
+	sort.SliceStable(result.Constraints, func(left, right int) bool {
+		return result.Constraints[left].ID < result.Constraints[right].ID
+	})
 	return result
+}
+
+func normalizeLoadPlan(plan LoadPlan) LoadPlan {
+	result := plan
+	result.PlannerVersion = strings.TrimSpace(result.PlannerVersion)
+	result.RequirementDigest = strings.TrimSpace(result.RequirementDigest)
+	result.Strategy = LoadStrategy(strings.ToLower(strings.TrimSpace(string(result.Strategy))))
+	result.LoadScalingFactor = strings.TrimSpace(result.LoadScalingFactor)
+	result.Classification = LoadClassification(strings.ToLower(strings.TrimSpace(string(result.Classification))))
+	result.Horizon = normalizeDurationValue(result.Horizon)
+	result.IterationDuration = normalizeDurationValue(result.IterationDuration)
+	result.EffectiveConstraints = append([]EffectiveLoadConstraint(nil), plan.EffectiveConstraints...)
+	for index := range result.EffectiveConstraints {
+		constraint := &result.EffectiveConstraints[index]
+		constraint.EnvelopeID = strings.TrimSpace(constraint.EnvelopeID)
+		constraint.ConstraintID = strings.TrimSpace(constraint.ConstraintID)
+		constraint.Window = normalizeDurationValue(constraint.Window)
+	}
+	result.Phases = append([]LoadPhase(nil), plan.Phases...)
+	for index := range result.Phases {
+		phase := &result.Phases[index]
+		phase.ID = strings.TrimSpace(phase.ID)
+		phase.Start = normalizeDurationValue(phase.Start)
+		phase.Duration = normalizeDurationValue(phase.Duration)
+		phase.MaxDuration = normalizeDurationValue(phase.MaxDuration)
+		phase.Load.Kind = PlannedLoadKind(strings.ToLower(strings.TrimSpace(string(phase.Load.Kind))))
+		phase.Load.TimeUnit = normalizeDurationValue(phase.Load.TimeUnit)
+		phase.Selection = normalizeSelection(phase.Selection)
+		phase.ConstraintIDs = cloneStrings(phase.ConstraintIDs)
+		sort.Strings(phase.ConstraintIDs)
+	}
+	result.Assumptions = cloneStrings(plan.Assumptions)
+	return result
+}
+
+func normalizeSelection(selection SelectionSpec) SelectionSpec {
+	selection.Mode = SelectionMode(strings.ToLower(strings.TrimSpace(string(selection.Mode))))
+	if selection.Mode == "" {
+		selection.Mode = SelectionRoundRobin
+	}
+	selection.Cases = cloneCaseWeights(selection.Cases)
+	for index := range selection.Cases {
+		selection.Cases[index].CaseID = strings.TrimSpace(selection.Cases[index].CaseID)
+	}
+	return selection
 }
 
 func normalizeThreshold(threshold Threshold) Threshold {
@@ -501,6 +569,11 @@ func provenanceKey(source Provenance) string {
 
 func cloneSynthesizedBenchmark(p SynthesizedBenchmark) SynthesizedBenchmark {
 	result := p
+	result.LoadRequirements = make([]LoadEnvelope, len(p.LoadRequirements))
+	for index, envelope := range p.LoadRequirements {
+		result.LoadRequirements[index] = cloneLoadEnvelope(envelope)
+	}
+	result.LoadPlan = cloneLoadPlan(p.LoadPlan)
 	if p.Cases != nil {
 		result.Cases = make([]Case, len(p.Cases))
 		for index, item := range p.Cases {
@@ -628,7 +701,6 @@ func cloneSegment(segment Segment) Segment {
 	result := segment
 	result.End = cloneDuration(segment.End)
 	result.Selection.Cases = cloneCaseWeights(segment.Selection.Cases)
-	result.Load = cloneLoadOverride(segment.Load)
 	result.ActiveChecks = cloneStrings(segment.ActiveChecks)
 	result.ActiveThresholds = cloneStrings(segment.ActiveThresholds)
 	result.Attributes = cloneAttributes(segment.Attributes)
@@ -663,33 +735,28 @@ func cloneSelector(selector Selector) Selector {
 	return selector
 }
 
-func cloneLoadOverride(load LoadOverride) LoadOverride {
-	result := load
-	result.Factor = cloneFloat(load.Factor)
-	result.VUs = cloneInt64(load.VUs)
-	result.Iterations = cloneInt64(load.Iterations)
-	result.RatePerSecond = cloneFloat(load.RatePerSecond)
-	result.Duration = cloneDuration(load.Duration)
+func cloneLoadEnvelope(envelope LoadEnvelope) LoadEnvelope {
+	result := envelope
+	result.Scope = cloneSelector(envelope.Scope)
+	result.Constraints = append([]LoadConstraint(nil), envelope.Constraints...)
+	result.ResponseTimes = append([]ResponseTimeObjective(nil), envelope.ResponseTimes...)
+	return result
+}
+
+func cloneLoadPlan(plan LoadPlan) LoadPlan {
+	result := plan
+	result.EffectiveConstraints = append([]EffectiveLoadConstraint(nil), plan.EffectiveConstraints...)
+	result.Phases = make([]LoadPhase, len(plan.Phases))
+	for index, phase := range plan.Phases {
+		result.Phases[index] = phase
+		result.Phases[index].Selection.Cases = cloneCaseWeights(phase.Selection.Cases)
+		result.Phases[index].ConstraintIDs = cloneStrings(phase.ConstraintIDs)
+	}
+	result.Assumptions = cloneStrings(plan.Assumptions)
 	return result
 }
 
 func cloneDuration(value *Duration) *Duration {
-	if value == nil {
-		return nil
-	}
-	result := *value
-	return &result
-}
-
-func cloneFloat(value *float64) *float64 {
-	if value == nil {
-		return nil
-	}
-	result := *value
-	return &result
-}
-
-func cloneInt64(value *int64) *int64 {
 	if value == nil {
 		return nil
 	}

@@ -16,8 +16,8 @@ func TestSegmentAtUsesHalfOpenBoundaries(t *testing.T) {
 
 	model := basePlan()
 	model.Segments = []dsl.Segment{
-		{ID: "warmup", Start: "0s", End: durationPtr("1s"), Checks: dsl.CheckEnabled},
-		{ID: "steady", Start: "1s", End: durationPtr("2s"), Checks: dsl.CheckDisabled},
+		{ID: "warmup", Start: "0s", End: new(dsl.Duration("1s")), Checks: dsl.CheckEnabled},
+		{ID: "steady", Start: "1s", End: new(dsl.Duration("2s")), Checks: dsl.CheckDisabled},
 		{ID: "tail", Start: "2s", Checks: dsl.CheckInherit},
 	}
 	validated, err := planpkg.ValidateAndFreeze(model)
@@ -49,7 +49,7 @@ func TestSegmentGapRequiresExplicitDefaultPolicy(t *testing.T) {
 	t.Parallel()
 
 	model := basePlan()
-	model.Segments = []dsl.Segment{{ID: "window", Start: "1s", End: durationPtr("2s")}}
+	model.Segments = []dsl.Segment{{ID: "window", Start: "1s", End: new(dsl.Duration("2s"))}}
 	err := planpkg.ValidateModel(model)
 	var segmentErr *planpkg.SegmentError
 	if err == nil || !errors.As(err, &segmentErr) {
@@ -207,22 +207,13 @@ func TestValidationChecksReferencesCardinalityAndCapabilities(t *testing.T) {
 	}
 
 	arrival := basePlan()
-	arrival.Baseline = dsl.LoadSpec{Kind: dsl.LoadArrivalRate, RatePerSecond: 2, Duration: "1s"}
+	arrival.LoadPlan.Phases[0].Load = dsl.PlannedLoad{Kind: dsl.PlannedLoadConstantArrival, Amount: 2, TimeUnit: "1s", PreAllocatedVUs: 1, MaxVUs: 1}
 	err = planpkg.Validate(arrival)
 	var capabilityErr *planpkg.CapabilityError
-	if err == nil || !errors.As(err, &capabilityErr) || !strings.Contains(err.Error(), "arrival-rate load") {
+	if err == nil || !errors.As(err, &capabilityErr) || !strings.Contains(err.Error(), "constant-arrival load") {
 		t.Fatalf("expected arrival-rate capability error, got %T: %v", err, err)
 	}
 
-	dynamic := basePlan()
-	dynamic.Segments = []dsl.Segment{{
-		ID: "dynamic", Start: "0s",
-		Load: dsl.LoadOverride{VUs: int64Ptr(2)},
-	}}
-	err = planpkg.Validate(dynamic)
-	if err == nil || !errors.As(err, &capabilityErr) || !strings.Contains(err.Error(), "dynamic VU") {
-		t.Fatalf("expected dynamic-VU capability error, got %T: %v", err, err)
-	}
 }
 
 func TestCardinalityCountsOnlyReachableDefaultSegment(t *testing.T) {
@@ -250,7 +241,7 @@ func TestCardinalityCountsOnlyReachableDefaultSegment(t *testing.T) {
 
 	segmented := basePlan()
 	segmented.Segments = []dsl.Segment{
-		{ID: "warmup", Start: "0s", End: durationPtr("1s"), Attributes: dsl.AttributeSet{{Name: "phase", Value: "warmup"}}},
+		{ID: "warmup", Start: "0s", End: new(dsl.Duration("1s")), Attributes: dsl.AttributeSet{{Name: "phase", Value: "warmup"}}},
 		{ID: "steady", Start: "1s", Attributes: dsl.AttributeSet{{Name: "phase", Value: "steady"}}},
 	}
 	segmented.Report = dsl.ReportSpec{
@@ -270,13 +261,13 @@ func TestComposeConflictPrecedenceIsExplicit(t *testing.T) {
 	left := basePlan()
 	left.Thresholds = []dsl.Threshold{{
 		ID: "latency", Metric: "http_req_duration", Aggregation: dsl.ThresholdAggregationPercentile,
-		Percentile: float64Ptr(95), Operator: "<=", Target: 100,
+		Percentile: new(float64(95)), Operator: "<=", Target: 100,
 		Source: dsl.Provenance{Kind: "policy", Locator: "consumer.yaml", Priority: 1},
 	}}
 	right := basePlan()
 	right.Thresholds = []dsl.Threshold{{
 		ID: "latency", Metric: "http_req_duration", Aggregation: dsl.ThresholdAggregationPercentile,
-		Percentile: float64Ptr(95), Operator: "<=", Target: 200,
+		Percentile: new(float64(95)), Operator: "<=", Target: 200,
 		Source: dsl.Provenance{Kind: "policy", Locator: "provider.yaml", Priority: 2},
 	}}
 	_, err := planpkg.Compose(left, right)
@@ -373,7 +364,7 @@ func basePlan() dsl.SynthesizedBenchmark {
 	return dsl.SynthesizedBenchmark{
 		SchemaVersion: dsl.CurrentSchemaVersion,
 		ID:            "example",
-		Baseline:      dsl.LoadSpec{Kind: dsl.LoadSharedIterations, VUs: 1, Iterations: 4},
+		LoadPlan:      explicitTestLoadPlan(4),
 		Cases: []dsl.Case{
 			{
 				ID: "case-a", Name: "Case A",
@@ -396,14 +387,6 @@ func basePlan() dsl.SynthesizedBenchmark {
 	}
 }
 
-func durationPtr(value dsl.Duration) *dsl.Duration {
-	return &value
-}
-
-func int64Ptr(value int64) *int64 {
-	return &value
-}
-
-func float64Ptr(value float64) *float64 {
-	return &value
+func explicitTestLoadPlan(iterations int64) dsl.LoadPlan {
+	return dsl.LoadPlan{PlannerVersion: "test", Strategy: dsl.LoadStrategyExplicit, LoadScalingFactor: "1", Classification: dsl.LoadClassificationExplicit, ExpectedStarts: iterations, PeakConcurrentVUs: 1, Phases: []dsl.LoadPhase{{ID: "native-go", Start: "0s", MaxDuration: "1m", ExpectedStarts: iterations, Load: dsl.PlannedLoad{Kind: dsl.PlannedLoadSharedIterations, VUs: 1, Iterations: iterations}, Selection: dsl.SelectionSpec{Mode: dsl.SelectionRoundRobin}}}}
 }

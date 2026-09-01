@@ -1,0 +1,21 @@
+agreements:
+  - consumer: logical-service-name-of-the-consumer
+    provider: logical-service-name-of-the-provider
+    slo:
+      - endpoint:
+          host: api.example.com
+          method: GET
+          pathTemplate: /foo/bar/{id}
+        loadConstraints:
+          - amount: 400
+            per-time-unit: ms
+          - amount: 800
+            per-time-unit: day
+        responseTimes:
+          - statusCode: 200
+            mean: 100ms
+            median: 110ms
+            p99: 120ms
+            p100: 150ms #or max
+          - statusCode: 5xx
+            p100: 50ms
