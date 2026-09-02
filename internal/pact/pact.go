@@ -29,6 +29,7 @@ const (
 	AttributeEndpoint        = "pact.endpoint"
 	AttributeInteraction     = "pact.interaction"
 	AttributeProviderState   = "pact.provider_state"
+	ProviderStateHeader      = "X-PACT-RequestedProviderState"
 	pactFileMetadata         = "pact_file"
 	pactDescriptionMeta      = "pact_description"
 	pactMismatchMetadata     = "pact_mismatch"

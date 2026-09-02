@@ -15,6 +15,7 @@ const (
 	pactMismatchMetadata        = pact.MismatchMetadata
 	pactResponseCheckName       = pact.ResponseCheckName
 	pactResponsesValidThreshold = "rate==1"
+	pactProviderStateHeader     = pact.ProviderStateHeader
 )
 
 var pactResponseCheckSubmetric = "check:" + pact.ResponseCheckName

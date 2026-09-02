@@ -45,6 +45,14 @@ func Case(interaction Interaction, index int) (dsl.Case, error) {
 	if err != nil {
 		return dsl.Case{}, err
 	}
+	providerState := interaction.Attributes[AttributeProviderState]
+	if providerState != "" && !hasHeader(requestHeaders, ProviderStateHeader) {
+		requestHeaders = append(requestHeaders, dsl.Header{
+			Name:           ProviderStateHeader,
+			Values:         []string{providerState},
+			ValuesPresence: dsl.PresenceValue,
+		})
+	}
 	requestCookies, err := cookieValues(interaction.Request.Cookies)
 	if err != nil {
 		return dsl.Case{}, fmt.Errorf("decode request cookies: %w", err)
@@ -85,6 +93,15 @@ func Case(interaction Interaction, index int) (dsl.Case, error) {
 		Metadata:   caseMetadata(interaction),
 		Source:     source,
 	}, nil
+}
+
+func hasHeader(headers []dsl.Header, name string) bool {
+	for _, header := range headers {
+		if strings.EqualFold(header.Name, name) {
+			return true
+		}
+	}
+	return false
 }
 
 func ReportSpec(interactions []Interaction) dsl.ReportSpec {

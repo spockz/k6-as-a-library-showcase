@@ -86,6 +86,26 @@ func TestLoadDirectoryLoadsAllInteractions(t *testing.T) {
 	}
 }
 
+func TestCaseAddsProviderStateHeader(t *testing.T) {
+	interactions, err := loadPactDirectory(filepath.Join("..", "..", "testdata", "pacts"))
+	if err != nil {
+		t.Fatalf("load PACT directory: %v", err)
+	}
+	item, err := Case(interactions[7], 7)
+	if err != nil {
+		t.Fatalf("create PACT case: %v", err)
+	}
+	for _, header := range item.Request.Headers {
+		if strings.EqualFold(header.Name, ProviderStateHeader) {
+			if !slices.Equal(header.Values, []string{"httpbin supports teapot responses"}) {
+				t.Fatalf("provider state header values = %#v", header.Values)
+			}
+			return
+		}
+	}
+	t.Fatalf("request is missing %s", ProviderStateHeader)
+}
+
 func TestResponseMatchingChecksStatusHeadersAndBody(t *testing.T) {
 	t.Parallel()
 

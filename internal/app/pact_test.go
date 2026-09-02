@@ -4,10 +4,14 @@ package app
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +22,8 @@ import (
 )
 
 const intentionalPactMismatchInteraction = "expect status 300 from the status 200 endpoint"
+
+const pactStubServerImage = "pactfoundation/pact-stub-server:0.7.1"
 
 type pactMetricPoint struct {
 	Metric string              `json:"metric"`
@@ -32,7 +38,12 @@ type pactMetricPointData struct {
 }
 
 func TestRunPactDirectoryWritesTaggedConsoleAndReportsAndFailsUnmetChecks(t *testing.T) {
-	server := newHTTPBinServer(t)
+	providerStateHeaders := make(chan string, 5)
+	server := newHTTPBinServer(t, func(request *http.Request) {
+		if request.URL.Path == "/status/418" {
+			providerStateHeaders <- request.Header.Get(pactProviderStateHeader)
+		}
+	})
 	defer server.Close()
 
 	directory := t.TempDir()
@@ -198,6 +209,161 @@ func TestRunPactDirectoryWritesTaggedConsoleAndReportsAndFailsUnmetChecks(t *tes
 	}
 	if !bytes.Equal(dashboardPayload, combinedPayload) {
 		t.Fatal("combined report changed the standalone dashboard event payload")
+	}
+	assertProviderStateWasSent(t, providerStateHeaders, 5)
+	t.Run("pact-stub-server", runPactDirectoryAgainstStubServer)
+}
+
+func runPactDirectoryAgainstStubServer(t *testing.T) {
+	t.Helper()
+	providerURL := startPactStubServer(t)
+	directory := t.TempDir()
+	config := defaultRunConfig()
+	config.pactProviderURL = providerURL
+	config.pactDirectory = pactFixtureDirectory()
+	config.virtualUsers = 1
+	config.iterations = 45
+	config.requestTimeout = time.Second
+	config.maxDuration = 10 * time.Second
+	config.jsonFilename = filepath.Join(directory, "metrics.json")
+	config.htmlFilename = filepath.Join(directory, "report.html")
+	var stdout, stderr bytes.Buffer
+	runErr := run(t.Context(), config, &stdout, &stderr)
+	if runErr != nil {
+		t.Fatalf("run Pact workload against stub server: %v\n%s", runErr, stderr.String())
+	}
+
+	assertIntentionalPactFailureInMetrics(t, config.jsonFilename, 0)
+	if got := countMetricPoints(t, config.jsonFilename, "http_reqs"); got != 45 {
+		t.Fatalf("stub server http_reqs points = %d, want 45", got)
+	}
+}
+
+func assertProviderStateWasSent(t *testing.T, headers <-chan string, expectedRequests int) {
+	t.Helper()
+	for range expectedRequests {
+		select {
+		case header := <-headers:
+			if header != "httpbin supports teapot responses" {
+				t.Errorf("provider-state header = %q, want %q", header, "httpbin supports teapot responses")
+			}
+		default:
+			t.Errorf("provider-state interaction did not send %s", pactProviderStateHeader)
+		}
+	}
+	select {
+	case header := <-headers:
+		t.Errorf("received unexpected provider-state header %q", header)
+	default:
+	}
+}
+
+func startPactStubServer(t *testing.T) string {
+	t.Helper()
+	runtime := pactStubContainerRuntime(t)
+	pactsDirectory, err := filepath.Abs(pactFixtureDirectory())
+	if err != nil {
+		t.Fatalf("resolve Pact fixture directory: %v", err)
+	}
+	args := []string{
+		"run", "--rm", "--detach", "--publish", "127.0.0.1::8080",
+		"--volume", pactsDirectory + ":/app/pacts:ro",
+		pactStubServerImage,
+		"-p", "8080", "-d", "/app/pacts",
+		"--provider-state-header-name", "X-PACT-RequestedProviderState",
+	}
+	containerID, err := exec.CommandContext(t.Context(), runtime, args...).Output()
+	if err != nil {
+		t.Fatalf("start Pact stub-server with %s: %v", filepath.Base(runtime), err)
+	}
+	id := strings.TrimSpace(string(containerID))
+	t.Cleanup(func() {
+		if output, cleanupErr := exec.Command(runtime, "rm", "-f", id).CombinedOutput(); cleanupErr != nil {
+			t.Logf("remove Pact stub-server %s: %v\n%s", id, cleanupErr, output)
+		}
+	})
+	portOutput, err := exec.CommandContext(t.Context(), runtime, "port", id, "8080/tcp").CombinedOutput()
+	if err != nil {
+		t.Fatalf("inspect Pact stub-server port: %v", err)
+	}
+	portText := strings.TrimSpace(string(portOutput))
+	separator := strings.LastIndex(portText, ":")
+	if separator < 0 {
+		t.Fatalf("invalid Pact stub-server port output %q", portText)
+	}
+	portText = portText[separator+1:]
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 {
+		t.Fatalf("invalid Pact stub-server port %q", portText)
+	}
+	providerURL := "http://127.0.0.1:" + strconv.Itoa(port)
+	deadline := time.Now().Add(15 * time.Second)
+	client := &http.Client{Timeout: time.Second}
+	for time.Now().Before(deadline) {
+		request, requestErr := http.NewRequestWithContext(t.Context(), http.MethodGet, providerURL+"/json", nil)
+		if requestErr != nil {
+			t.Fatalf("create Pact stub-server readiness request: %v", requestErr)
+		}
+		request.Header.Set("Accept", "application/json")
+		response, requestErr := client.Do(request)
+		if requestErr == nil {
+			closeErr := response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				if closeErr != nil {
+					t.Fatalf("close Pact stub-server readiness response: %v", closeErr)
+				}
+				return providerURL
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	logs, _ := exec.CommandContext(t.Context(), runtime, "logs", id).CombinedOutput()
+	t.Fatalf("Pact stub-server did not become ready at %s\n%s", providerURL, logs)
+	return ""
+}
+
+func pactStubContainerRuntime(t *testing.T) string {
+	t.Helper()
+	var unavailable []string
+	for _, candidate := range []string{"podman", "docker"} {
+		runtime, err := exec.LookPath(candidate)
+		if err != nil {
+			unavailable = append(unavailable, candidate+" is not installed")
+			continue
+		}
+		if output, err := exec.CommandContext(t.Context(), runtime, "info").CombinedOutput(); err == nil {
+			return runtime
+		} else {
+			unavailable = append(unavailable, fmt.Sprintf("%s is not usable: %v (%s)", candidate, err, strings.TrimSpace(string(output))))
+		}
+	}
+	t.Skipf("Pact stub-server integration requires a usable Podman or Docker runtime: %s", strings.Join(unavailable, "; "))
+	return ""
+}
+
+func countMetricPoints(t *testing.T, filename, metricName string) int {
+	t.Helper()
+	file, err := os.Open(filename)
+	if err != nil {
+		t.Fatalf("open metrics: %v", err)
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("close metrics: %v", err)
+		}
+	}()
+	count := 0
+	decoder := json.NewDecoder(file)
+	for {
+		var point pactMetricPoint
+		if err := decoder.Decode(&point); err == io.EOF {
+			return count
+		} else if err != nil {
+			t.Fatalf("decode metrics: %v", err)
+		}
+		if point.Type == "Point" && point.Metric == metricName {
+			count++
+		}
 	}
 }
 
@@ -366,9 +532,15 @@ func assertPactFailureInConsoleMetric(t *testing.T, report, metricName, expected
 	t.Errorf("console metric %q is missing the failed Pact interaction row", metricName)
 }
 
-func newHTTPBinServer(t *testing.T) *httptest.Server {
+func newHTTPBinServer(t *testing.T, observe func(*http.Request)) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(httpbin.New())
+	handler := httpbin.New()
+	return httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if observe != nil {
+			observe(request)
+		}
+		handler.ServeHTTP(response, request)
+	}))
 }
 
 func TestSummaryOutputSplitsPactMetricsByTags(t *testing.T) {
