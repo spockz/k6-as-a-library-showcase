@@ -59,11 +59,11 @@ e2e_compose "$project_a" "$port_a" "$test_id_a" "$repo_root" config >/dev/null
 e2e_compose "$project_b" "$port_b" "$test_id_b" "$repo_root" config >/dev/null
 
 e2e_compose "$project_a" "$port_a" "$test_id_a" "$repo_root" \
-  up --build --detach provider collector mimir tempo loki grafana \
+  up --build --detach provider pact-stub collector mimir tempo loki grafana \
   >"$tmp_dir/up-a.log" 2>&1 &
 up_a_pid=$!
 e2e_compose "$project_b" "$port_b" "$test_id_b" "$repo_root" \
-  up --build --detach provider collector mimir tempo loki grafana \
+  up --build --detach provider pact-stub collector mimir tempo loki grafana \
   >"$tmp_dir/up-b.log" 2>&1 &
 up_b_pid=$!
 

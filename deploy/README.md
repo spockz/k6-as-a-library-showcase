@@ -25,6 +25,7 @@ validation environment, so no digest is invented here.
 | --- | --- |
 | Benchmark runner | `docker.io/library/golang:1.27.0-bookworm` |
 | go-httpbin | `ghcr.io/mccutchen/go-httpbin:2.25.0@sha256:20739736d4eb8dc1b998dff701f437b8bd62dcc46492bd0d861e89890ca36500` |
+| Pact stub server | `pactfoundation/pact-stub-server:0.7.1` |
 | Collector contrib | `ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.158.0` |
 | Mimir | `grafana/mimir:3.2.0` |
 | Tempo | `grafana/tempo:3.0.2` |
@@ -46,6 +47,11 @@ scripts/e2e/run-concurrent.sh
 and `E2E_ITERATIONS` identify and size a run. Set `KEEP_E2E_STACK=1` to retain
 resources for inspection. The scripts do not use `container_name`, host
 networking, fixed external networks, or a container logging driver.
+
+The benchmark service runs the Pact directory against both go-httpbin and the
+Pact stub server. The stub selects provider-state responses from
+`X-PACT-RequestedProviderState`; its results must pass every Pact check, while
+go-httpbin intentionally exposes the fixture's expected-status mismatch.
 
 The original Prometheus Remote Write dashboard 19665 is retained in
 `testdata/grafana/dashboards/k6-prometheus-19665.json`. The adapted dashboard

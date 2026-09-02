@@ -5,20 +5,33 @@ set -euo pipefail
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
 wait_for_http="$script_dir/wait-for-http.sh"
 
-test_id="${E2E_TEST_ID:-k6-e2e}"
-expected_iterations="${E2E_EXPECTED_ITERATIONS:-45}"
-readiness_timeout="${E2E_READINESS_TIMEOUT_SECONDS:-60}"
-query_timeout="${E2E_QUERY_TIMEOUT_SECONDS:-30}"
-settle_seconds="${E2E_SETTLE_SECONDS:-5}"
-metrics_file=/out/metrics.json
-report_file=/out/report.html
-combined_report_file=/out/combined.html
-log_file=/out/benchmark.log
+base_test_id="${E2E_TEST_ID:-k6-e2e}"
+backend="${E2E_BACKEND:-}"
 
 fail() {
   printf 'E2E assertion failed: %s\n' "$1" >&2
   exit 1
 }
+
+if [[ -z "$backend" ]]; then
+  E2E_BACKEND=httpbin "$0" "$@"
+  E2E_BACKEND=pact-stub "$0" "$@"
+  exit 0
+fi
+case "$backend" in
+  httpbin) provider_host=provider ;;
+  pact-stub) provider_host=pact-stub ;;
+  *) fail "unsupported E2E_BACKEND: $backend" ;;
+esac
+test_id="${base_test_id}-${backend}"
+expected_iterations="${E2E_EXPECTED_ITERATIONS:-45}"
+readiness_timeout="${E2E_READINESS_TIMEOUT_SECONDS:-60}"
+query_timeout="${E2E_QUERY_TIMEOUT_SECONDS:-30}"
+settle_seconds="${E2E_SETTLE_SECONDS:-5}"
+metrics_file="/out/metrics-${backend}.json"
+report_file="/out/report-${backend}.html"
+combined_report_file="/out/combined-${backend}.html"
+log_file="/out/benchmark-${backend}.log"
 
 if [[ ! "$expected_iterations" =~ ^[1-9][0-9]*$ ]]; then
   fail "E2E_EXPECTED_ITERATIONS must be a positive integer"
@@ -37,12 +50,19 @@ if [[ ! "$test_id" =~ ^[A-Za-z0-9_.:/-]+$ ]]; then
 fi
 
 expected_iterations_number=$((10#$expected_iterations))
-expected_failure_minimum=$((expected_iterations_number / 9))
-if (( expected_failure_minimum < 1 )); then
-  expected_failure_minimum=1
-fi
+case "$backend" in
+  httpbin)
+    expected_failure_count=$((expected_iterations_number / 9))
+    expected_benchmark_status=1
+    ;;
+  pact-stub)
+    expected_failure_count=0
+    expected_benchmark_status=0
+    ;;
+  *) fail "unsupported E2E_BACKEND: $backend" ;;
+esac
 
-"$wait_for_http" http://provider:8080/headers "$readiness_timeout"
+"$wait_for_http" "http://${provider_host}:8080/base64/UGFjdCBleGFtcGxl" "$readiness_timeout"
 "$wait_for_http" http://collector:13133/ "$readiness_timeout"
 "$wait_for_http" http://mimir:9009/ready "$readiness_timeout"
 "$wait_for_http" http://tempo:3200/ready "$readiness_timeout"
@@ -84,10 +104,10 @@ if ! jq -e -s --argjson expected "$expected_iterations_number" '
 ' "$metrics_file" >/dev/null; then
   fail "http_reqs JSON points do not equal the requested iteration count"
 fi
-if ! jq -e -s --argjson minimum "$expected_failure_minimum" '
-  (([.[] | select(.type == "Point" and .metric == "http_req_failed") | .data.value] | add) >= $minimum)
+if ! jq -e -s --argjson expected "$expected_failure_count" '
+  (([.[] | select(.type == "Point" and .metric == "http_req_failed") | .data.value] | add) == $expected)
 ' "$metrics_file" >/dev/null; then
-  fail "JSON metrics contain fewer failed requests than the deliberate Pact mismatch minimum"
+  fail "JSON metrics do not contain the expected number of failed requests"
 fi
 if ! jq -e -s '
   any(.[]; .type == "Point" and .metric == "http_reqs" and .data.tags["pact.provider_service"] == "httpbin")
@@ -124,11 +144,11 @@ for fragment in \
     fail "HTML report is missing $fragment"
   fi
 done
-if ! grep --fixed-strings --quiet -- "benchmark_started testid=$test_id" "$log_file"; then
+if ! grep --fixed-strings --quiet -- "benchmark_started testid=$test_id backend=$backend" "$log_file"; then
   fail "benchmark log has no start marker for $test_id"
 fi
-if ! grep --fixed-strings --quiet -- "benchmark_finished testid=$test_id status=0" "$log_file"; then
-  fail "benchmark log has no successful finish marker for $test_id"
+if ! grep --fixed-strings --quiet -- "benchmark_finished testid=$test_id backend=$backend status=$expected_benchmark_status" "$log_file"; then
+  fail "benchmark log has no expected finish marker for $test_id"
 fi
 if ! grep --fixed-strings --quiet -- "checks_total.......: $expected_iterations" "$log_file"; then
   fail "benchmark console output has no checks total for $expected_iterations iterations"
@@ -213,7 +233,7 @@ failed_url="$(mimir_query_url "$failed_query")"
 wait_for_json_condition \
   'Mimir failed-request counter' \
   "$failed_url" \
-  ".status == \"success\" and (.data.result | length > 0) and ((.data.result | map(.value[1] | tonumber) | add) >= $expected_failure_minimum)" \
+  ".status == \"success\" and ((.data.result | map(.value[1] | tonumber) | add // 0) == $expected_failure_count)" \
   plain
 
 checks_query="sum(k6_checks_total{testid=$query_testid,condition=\"zero\"})"
@@ -221,7 +241,7 @@ checks_url="$(mimir_query_url "$checks_query")"
 wait_for_json_condition \
   'Mimir failed-check counter' \
   "$checks_url" \
-  ".status == \"success\" and (.data.result | length > 0) and ((.data.result | map(.value[1] | tonumber) | add) >= $expected_failure_minimum)" \
+  ".status == \"success\" and ((.data.result | map(.value[1] | tonumber) | add // 0) == $expected_failure_count)" \
   plain
 
 histogram_query="sum(k6_http_req_duration_milliseconds_count{testid=$query_testid})"

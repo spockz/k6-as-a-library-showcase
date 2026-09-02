@@ -36,7 +36,7 @@ trap cleanup EXIT
 e2e_compose "$project" "$grafana_port" "$test_id" "$repo_root" config >/dev/null
 e2e_compose \
   "$project" "$grafana_port" "$test_id" "$repo_root" \
-  up --build --detach provider collector mimir tempo loki grafana
+  up --build --detach provider pact-stub collector mimir tempo loki grafana
 e2e_compose \
   "$project" "$grafana_port" "$test_id" "$repo_root" \
   run --build --rm --no-deps -T benchmark

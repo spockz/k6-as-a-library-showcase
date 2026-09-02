@@ -13,7 +13,7 @@ receivers:
         endpoint: 0.0.0.0:4318
   file_log/benchmark:
     include:
-      - /var/log/benchmark/benchmark.log
+      - /var/log/benchmark/benchmark-*.log
     start_at: beginning
     on_truncate: read_whole_file
     poll_interval: 200ms
@@ -36,9 +36,6 @@ processors:
         action: upsert
       - key: service.version
         value: 1.8.1
-        action: upsert
-      - key: testid
-        value: ${env:E2E_TEST_ID}
         action: upsert
   batch:
     send_batch_size: 128

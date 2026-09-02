@@ -21,6 +21,16 @@ services:
     networks:
       - telemetry
 
+  pact-stub:
+    image: pactfoundation/pact-stub-server:0.7.1
+    command: ["-p", "8080", "-d", "/app/pacts", "--provider-state-header-name", "X-PACT-RequestedProviderState"]
+    expose:
+      - "8080"
+    volumes:
+      - ./testdata/pacts:/app/pacts:ro
+    networks:
+      - telemetry
+
   collector:
     image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.158.0
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
@@ -135,7 +145,6 @@ services:
       E2E_TEST_ID: "${E2E_TEST_ID:-k6-e2e}"
       E2E_ITERATIONS: "${E2E_ITERATIONS:-45}"
       E2E_VUS: "${E2E_VUS:-1}"
-      E2E_MIN_ITERATION_DURATION: "${E2E_MIN_ITERATION_DURATION:-25ms}"
       E2E_REQUEST_TIMEOUT: "${E2E_REQUEST_TIMEOUT:-5s}"
       E2E_MAX_DURATION: "${E2E_MAX_DURATION:-30s}"
       E2E_READINESS_TIMEOUT_SECONDS: "${E2E_READINESS_TIMEOUT_SECONDS:-60}"
@@ -151,7 +160,7 @@ services:
       K6_OTEL_HTTP_EXPORTER_INSECURE: "true"
       K6_TRACES_OUTPUT: otel=http://collector:4318,proto=http
       OTEL_SERVICE_NAME: k6-as-a-library
-      OTEL_RESOURCE_ATTRIBUTES: "service.version=1.8.1,testid=${E2E_TEST_ID:-k6-e2e}"
+      OTEL_RESOURCE_ATTRIBUTES: "service.version=1.8.1"
     volumes:
       - .:/workspace:ro
       - benchmark-output:/out
