@@ -66,9 +66,9 @@ func New(ctx context.Context, input Config, factorySets ...ExporterFactories) (*
 		}
 	}
 
-	telemetryResource, err := resource.New(
-		ctx,
-		resource.WithAttributes(resourceAttributes(config)...),
+	telemetryResource, err := resource.Merge(
+		resource.Default(),
+		resource.NewSchemaless(resourceAttributes(config)...),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create OTEL trace resource: %w", err)
